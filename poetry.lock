@@ -148,6 +148,24 @@ frozenlist = ">=1.1.0"
 typing-extensions = {version = ">=4.2", markers = "python_version < \"3.13\""}
 
 [[package]]
+name = "aiosqlite"
+version = "0.21.0"
+description = "asyncio bridge to the standard sqlite3 module"
+optional = false
+python-versions = ">=3.9"
+files = [
+    {file = "aiosqlite-0.21.0-py3-none-any.whl", hash = "sha256:2549cf4057f95f53dcba16f2b64e8e2791d7e1adedb13197dd8ed77bb226d7d0"},
+    {file = "aiosqlite-0.21.0.tar.gz", hash = "sha256:131bb8056daa3bc875608c631c678cda73922a2d4ba8aec373b19f18c17e7aa3"},
+]
+
+[package.dependencies]
+typing_extensions = ">=4.0"
+
+[package.extras]
+dev = ["attribution (==1.7.1)", "black (==24.3.0)", "build (>=1.2)", "coverage[toml] (==7.6.10)", "flake8 (==7.0.0)", "flake8-bugbear (==24.12.12)", "flit (==3.10.1)", "mypy (==1.14.1)", "ufmt (==2.5.1)", "usort (==1.0.8.post1)"]
+docs = ["sphinx (==8.1.3)", "sphinx-mdinclude (==0.6.1)"]
+
+[[package]]
 name = "alembic"
 version = "1.16.5"
 description = "A database migration tool for SQLAlchemy."
@@ -4459,6 +4477,23 @@ pymysql = ["pymysql"]
 sqlcipher = ["sqlcipher3_binary"]
 
 [[package]]
+name = "sqlalchemy-timescaledb"
+version = "0.4.1"
+description = "A SQLAlchemy dialect for TimescaleDB"
+optional = false
+python-versions = "*"
+files = [
+    {file = "sqlalchemy-timescaledb-0.4.1.tar.gz", hash = "sha256:43870866c6c951a71a5e83c74580574192baaf833a514eca4855ab8c48d15e0b"},
+    {file = "sqlalchemy_timescaledb-0.4.1-py3-none-any.whl", hash = "sha256:c2111a3c8f5f141bbe34a33319926a1427dc6bd8039a2fbbca1965894a1f3416"},
+]
+
+[package.dependencies]
+sqlalchemy = ">=1.3"
+
+[package.extras]
+test = ["alembic (==1.9.4)", "asyncpg (==0.27.0)", "psycopg2-binary (==2.9.5)", "pytest (==7.2.1)", "pytest-asyncio (==0.20.3)", "pytest-cov (==4.0.0)", "pytest-factoryboy (==2.5.1)", "sqlalchemy[asyncio] (>=1.3)"]
+
+[[package]]
 name = "sqlparse"
 version = "0.5.3"
 description = "A non-validating SQL parser."
@@ -5473,4 +5508,4 @@ cffi = ["cffi (>=1.17)"]
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.11"
-content-hash = "33e469db7b65ab0f051efc80d0283d3bfa15510a11beb3ca7f811908526205d3"
+content-hash = "ed6147eeb12120c794ffb3f496de5dec50a68e9ded3616891aa1d0230ed6df4a"

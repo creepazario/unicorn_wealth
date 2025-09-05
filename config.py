@@ -54,3 +54,18 @@ DRIFT_ACTION_THRESHOLDS = {
 # --- LOGGING ---
 LOG_LEVEL = "INFO"
 LOG_FILE_PATH = "logs/unicorn_wealth.log"
+
+# --- DATABASE ---
+DB_POOL_SIZE = 10
+DB_MAX_OVERFLOW = 20
+DB_POOL_RECYCLE_SECONDS = 3600
+
+# --- EXCHANGE CONNECTION SETTINGS ---
+EXCHANGE_CONNECTION_SETTINGS = {
+    "binance": {"unicorn": True, "personal": False},
+    "kraken": {"unicorn": False, "personal": False},
+    "hyperliquid": {"unicorn": False, "personal": False},
+    "bitget": {"unicorn": False, "personal": False},
+    "bybit": {"unicorn": False, "personal": False},
+    "kucoin": {"unicorn": False, "personal": False},
+}

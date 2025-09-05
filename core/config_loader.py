@@ -1,23 +1,35 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Dict
 
 # Resolve logging defaults regardless of import style (package or flat)
 try:
     from config import (
         LOG_LEVEL as DEFAULT_LOG_LEVEL,
         LOG_FILE_PATH as DEFAULT_LOG_FILE_PATH,
+        DB_POOL_SIZE as DEFAULT_DB_POOL_SIZE,
+        DB_MAX_OVERFLOW as DEFAULT_DB_MAX_OVERFLOW,
+        DB_POOL_RECYCLE_SECONDS as DEFAULT_DB_POOL_RECYCLE_SECONDS,
+        EXCHANGE_CONNECTION_SETTINGS as DEFAULT_EXCHANGE_CONNECTION_SETTINGS,
     )  # type: ignore
 except Exception:  # pragma: no cover - fallback when importing with packages
     try:
         from . import config as _cfg  # type: ignore
 
-        DEFAULT_LOG_LEVEL = _cfg.LOG_LEVEL  # type: ignore[attr-defined]
-        DEFAULT_LOG_FILE_PATH = _cfg.LOG_FILE_PATH  # type: ignore[attr-defined]
+        DEFAULT_LOG_LEVEL = _cfg.LOG_LEVEL
+        DEFAULT_LOG_FILE_PATH = _cfg.LOG_FILE_PATH
+        DEFAULT_DB_POOL_SIZE = _cfg.DB_POOL_SIZE
+        DEFAULT_DB_MAX_OVERFLOW = _cfg.DB_MAX_OVERFLOW
+        DEFAULT_DB_POOL_RECYCLE_SECONDS = _cfg.DB_POOL_RECYCLE_SECONDS
+        DEFAULT_EXCHANGE_CONNECTION_SETTINGS = _cfg.EXCHANGE_CONNECTION_SETTINGS
     except Exception:
         from unicorn_wealth.config import (
             LOG_LEVEL as DEFAULT_LOG_LEVEL,
             LOG_FILE_PATH as DEFAULT_LOG_FILE_PATH,
+            DB_POOL_SIZE as DEFAULT_DB_POOL_SIZE,
+            DB_MAX_OVERFLOW as DEFAULT_DB_MAX_OVERFLOW,
+            DB_POOL_RECYCLE_SECONDS as DEFAULT_DB_POOL_RECYCLE_SECONDS,
+            EXCHANGE_CONNECTION_SETTINGS as DEFAULT_EXCHANGE_CONNECTION_SETTINGS,
         )  # type: ignore
 
 # Pydantic v2 deprecated BaseSettings in core;
@@ -69,8 +81,8 @@ class AccountCredentials(BaseModel):
 class ExchangeSettings(BaseModel):
     """Holds credentials for both account types for a single exchange."""
 
-    unicorn: AccountCredentials
-    personal: AccountCredentials
+    unicorn: Optional[AccountCredentials] = None
+    personal: Optional[AccountCredentials] = None
 
 
 class Settings(BaseSettings):
@@ -96,6 +108,9 @@ class Settings(BaseSettings):
 
     # --- Database ---
     database_url: str
+    db_pool_size: int = DEFAULT_DB_POOL_SIZE
+    db_max_overflow: int = DEFAULT_DB_MAX_OVERFLOW
+    db_pool_recycle_seconds: int = DEFAULT_DB_POOL_RECYCLE_SECONDS
 
     # --- Telegram ---
     telegram_api_id: str
@@ -103,6 +118,11 @@ class Settings(BaseSettings):
     telegram_bot_token: str
     telegram_admin_channel_id: str
     telegram_trade_channel_id: str
+
+    # --- Exchange Enablement Map (from config.py) ---
+    exchange_connection_settings: Dict[str, Dict[str, bool]] = (
+        DEFAULT_EXCHANGE_CONNECTION_SETTINGS
+    )
 
     # --- Exchange API Keys (Flat mapping to .env) ---
     # Binance
@@ -120,27 +140,27 @@ class Settings(BaseSettings):
     # HyperLiquid
     hyperliquid_unicorn_api_key: str
     hyperliquid_unicorn_api_secret: str
-    hyperliquid_personal_api_key: str
-    hyperliquid_personal_api_secret: str
+    hyperliquid_personal_api_key: Optional[str] = None
+    hyperliquid_personal_api_secret: Optional[str] = None
 
     # Bitget (includes passphrase)
-    bitget_unicorn_api_key: str
-    bitget_unicorn_api_secret: str
-    bitget_unicorn_api_passphrase: str
+    bitget_unicorn_api_key: Optional[str] = None
+    bitget_unicorn_api_secret: Optional[str] = None
+    bitget_unicorn_api_passphrase: Optional[str] = None
     bitget_personal_api_key: str
     bitget_personal_api_secret: str
     bitget_personal_api_passphrase: str
 
     # Bybit
-    bybit_unicorn_api_key: str
-    bybit_unicorn_api_secret: str
+    bybit_unicorn_api_key: Optional[str] = None
+    bybit_unicorn_api_secret: Optional[str] = None
     bybit_personal_api_key: str
     bybit_personal_api_secret: str
 
     # Kucoin (includes passphrase)
-    kucoin_unicorn_api_key: str
-    kucoin_unicorn_api_secret: str
-    kucoin_unicorn_api_passphrase: str
+    kucoin_unicorn_api_key: Optional[str] = None
+    kucoin_unicorn_api_secret: Optional[str] = None
+    kucoin_unicorn_api_passphrase: Optional[str] = None
     kucoin_personal_api_key: str
     kucoin_personal_api_secret: str
     kucoin_personal_api_passphrase: str
