@@ -29,9 +29,18 @@ MASTER_TOKEN_LIST = {
 # --- FEATURE PARAMETERS (HORIZON-SPECIFIC) ---
 # These will be dynamically populated later and updated by the operator.
 FEATURE_PARAMS = {
-    "1h": {},
-    "4h": {},
-    "8h": {},
+    "1h": {
+        "adx_15m": {"window": 30},
+        "rsi_15m": {"window": 40},
+    },
+    "4h": {
+        "adx_15m": {"window": 30},
+        "rsi_15m": {"window": 40},
+    },
+    "8h": {
+        "adx_15m": {"window": 30},
+        "rsi_15m": {"window": 40},
+    },
 }
 
 # --- TELEGRAM NOTIFICATION SETTINGS ---
@@ -68,4 +77,17 @@ EXCHANGE_CONNECTION_SETTINGS = {
     "bitget": {"unicorn": False, "personal": False},
     "bybit": {"unicorn": False, "personal": False},
     "kucoin": {"unicorn": False, "personal": False},
+}
+
+# --- API CLIENT SETTINGS ---
+API_CLIENT_SETTINGS = {
+    "TENACITY_RETRY": {
+        "WAIT_MIN": 1,
+        "WAIT_MAX": 60,
+        "STOP_MAX_ATTEMPT": 5,
+    },
+    "CIRCUIT_BREAKER": {
+        "FAIL_MAX": 5,
+        "RESET_TIMEOUT": 60,
+    },
 }

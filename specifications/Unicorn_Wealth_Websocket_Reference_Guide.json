@@ -1,0 +1,348 @@
+{
+  "webSocketReference": {
+    "providers": [
+      {
+        "name": "CoinAPI",
+        "authentication": {
+          "method": "Message-based",
+          "details": "Authentication is performed by including a valid API key within the 'hello' or 'subscribe' message sent after the WebSocket connection is established."
+        },
+        "connection": {
+          "protocol": "wss/ws",
+          "communicationFormat": "JSON",
+          "endpoints": [
+            {
+              "type": "Production",
+              "encryption": "Yes",
+              "url": "wss://ws.coinapi.io/v1/",
+              "region": "GeoDNS (auto-routing)"
+            },
+            {
+              "type": "Production",
+              "encryption": "No",
+              "url": "ws://ws.coinapi.io/v1/",
+              "region": "GeoDNS (auto-routing)"
+            },
+            {
+              "type": "Production",
+              "encryption": "Yes",
+              "url": "wss://api-ncsa.coinapi.io/v1/",
+              "region": "North & South America"
+            },
+            {
+              "type": "Production",
+              "encryption": "No",
+              "url": "ws://api-ncsa.coinapi.io/v1/",
+              "region": "North & South America"
+            },
+            {
+              "type": "Production",
+              "encryption": "Yes",
+              "url": "wss://api-emea.coinapi.io/v1/",
+              "region": "Europe, Middle East & Africa"
+            },
+            {
+              "type": "Production",
+              "encryption": "No",
+              "url": "ws://api-emea.coinapi.io/v1/",
+              "region": "Europe, Middle East & Africa"
+            },
+            {
+              "type": "Production",
+              "encryption": "Yes",
+              "url": "wss://api-apac.coinapi.io/v1/",
+              "region": "Asia Pacific"
+            },
+            {
+              "type": "Production",
+              "encryption": "No",
+              "url": "ws://api-apac.coinapi.io/v1/",
+              "region": "Asia Pacific"
+            }
+          ]
+        },
+        "subscriptionManagement": {
+          "hello": {
+            "type": "hello",
+            "description": "Initiates a fresh start. It clears any existing subscription slate and sets up a new scope from scratch. Must be sent after connection is established if not using 'subscribe'."
+          },
+          "subscribe": {
+            "type": "subscribe",
+            "description": "Expands the current subscription scope by adding new data types or filters without discarding existing ones."
+          },
+          "unsubscribe": {
+            "type": "unsubscribe",
+            "description": "Selectively removes specific data types or filters from the current subscription without affecting the rest."
+          },
+          "parameters": [
+            {
+              "name": "type",
+              "type": "string",
+              "required": true,
+              "description": "Message type: 'hello', 'subscribe', or 'unsubscribe'."
+            },
+            {
+              "name": "heartbeat",
+              "type": "boolean",
+              "required": false,
+              "description": "Set to true to receive a Heartbeat message every second of inactivity."
+            },
+            {
+              "name": "subscribe_data_type",
+              "type": "string[]",
+              "required": true,
+              "description": "List of data types to subscribe to."
+            },
+            {
+              "name": "subscribe_filter_symbol_id",
+              "type": "string[]",
+              "required": false,
+              "description": "Filter for specific symbol identifiers. Suffix with '$' for exact match."
+            },
+            {
+              "name": "subscribe_filter_asset_id",
+              "type": "string[]",
+              "required": false,
+              "description": "Filter for specific asset identifiers or asset pairs (e.g., 'BTC/USD')."
+            },
+            {
+              "name": "subscribe_filter_period_id",
+              "type": "string[]",
+              "required": false,
+              "description": "Filter for specific OHLCV periods."
+            },
+            {
+              "name": "subscribe_filter_exchange_id",
+              "type": "string[]",
+              "required": false,
+              "description": "Filter for specific exchange identifiers."
+            },
+            {
+              "name": "subscribe_update_limit_ms_quote",
+              "type": "int",
+              "required": false,
+              "description": "Minimum delay in milliseconds between quote updates for the same symbol."
+            },
+            {
+              "name": "subscribe_update_limit_ms_book_snapshot",
+              "type": "int",
+              "required": false,
+              "description": "Minimum delay in milliseconds between book snapshot updates for the same symbol."
+            },
+            {
+              "name": "subscribe_update_limit_ms_exrate",
+              "type": "int",
+              "required": false,
+              "description": "Minimum delay in milliseconds between exchange rate updates for the same asset pair."
+            }
+          ]
+        },
+        "dataTypes": [
+          {
+            "name": "trade",
+            "description": "Executed transactions feed.",
+            "payloadFields": [
+              {"name": "type", "type": "string", "description": "Always 'trade'."},
+              {"name": "symbol_id", "type": "string"},
+              {"name": "sequence", "type": "number"},
+              {"name": "time_exchange", "type": "string"},
+              {"name": "time_coinapi", "type": "string"},
+              {"name": "uuid", "type": "string"},
+              {"name": "price", "type": "number"},
+              {"name": "size", "type": "number"},
+              {"name": "taker_side", "type": "string", "description": "Values: BUY, SELL, BUY_ESTIMATED, SELL_ESTIMATED, UNKNOWN."}
+            ]
+          },
+          {
+            "name": "quote",
+            "description": "Quote updates feed (order book level 1).",
+            "payloadFields": [
+              {"name": "type", "type": "string", "description": "Always 'quote'."},
+              {"name": "symbol_id", "type": "string"},
+              {"name": "sequence", "type": "number"},
+              {"name": "time_exchange", "type": "string"},
+              {"name": "time_coinapi", "type": "string"},
+              {"name": "ask_price", "type": "number"},
+              {"name": "ask_size", "type": "number"},
+              {"name": "bid_price", "type": "number"},
+              {"name": "bid_size", "type": "number"}
+            ]
+          },
+          {
+            "name": "book",
+            "description": "Full order book snapshots and real-time updates (level 2).",
+            "payloadFields": [
+              {"name": "type", "type": "string", "description": "Always 'book'."},
+              {"name": "symbol_id", "type": "string"},
+              {"name": "sequence", "type": "number"},
+              {"name": "time_exchange", "type": "string"},
+              {"name": "time_coinapi", "type": "string"},
+              {"name": "is_snapshot", "type": "boolean"},
+              {"name": "asks", "type": "array of objects", "description": "Array of {'price': number, 'size': number}."},
+              {"name": "bids", "type": "array of objects", "description": "Array of {'price': number, 'size': number}."}
+            ]
+          },
+          {
+            "name": "book5",
+            "description": "Order book snapshots feed (5 best levels).",
+            "payloadFields": [
+              {"name": "type", "type": "string", "description": "Always 'book5'."},
+              {"name": "symbol_id", "type": "string"},
+              {"name": "sequence", "type": "number"},
+              {"name": "time_exchange", "type": "string"},
+              {"name": "time_coinapi", "type": "string"},
+              {"name": "asks", "type": "array of objects", "description": "Top 5 asks: {'price': number, 'size': number}."},
+              {"name": "bids", "type": "array of objects", "description": "Top 5 bids: {'price': number, 'size': number}."}
+            ]
+          },
+          {
+            "name": "book20",
+            "description": "Order book snapshots feed (20 best levels).",
+            "payloadFields": [
+              {"name": "type", "type": "string", "description": "Always 'book20'."},
+              {"name": "symbol_id", "type": "string"},
+              {"name": "sequence", "type": "number"},
+              {"name": "time_exchange", "type": "string"},
+              {"name": "time_coinapi", "type": "string"},
+              {"name": "asks", "type": "array of objects", "description": "Top 20 asks: {'price': number, 'size': number}."},
+              {"name": "bids", "type": "array of objects", "description": "Top 20 bids: {'price': number, 'size': number}."}
+            ]
+          },
+          {
+            "name": "book50",
+            "description": "Order book snapshots feed (50 best levels).",
+            "payloadFields": [
+              {"name": "type", "type": "string", "description": "Always 'book50'."},
+              {"name": "symbol_id", "type": "string"},
+              {"name": "sequence", "type": "number"},
+              {"name": "time_exchange", "type": "string"},
+              {"name": "time_coinapi", "type": "string"},
+              {"name": "asks", "type": "array of objects", "description": "Top 50 asks: {'price': number, 'size': number}."},
+              {"name": "bids", "type": "array of objects", "description": "Top 50 bids: {'price': number, 'size': number}."}
+            ]
+          },
+          {
+            "name": "book_l3",
+            "description": "Full order book snapshots and updates (order-by-order, level 3).",
+            "payloadFields": [
+              {"name": "type", "type": "string", "description": "Always 'book_l3'."},
+              {"name": "symbol_id", "type": "string"},
+              {"name": "sequence", "type": "number"},
+              {"name": "time_exchange", "type": "string"},
+              {"name": "time_coinapi", "type": "string"},
+              {"name": "is_snapshot", "type": "boolean"},
+              {"name": "asks", "type": "array of objects", "description": "Array of {'id': string, 'price': number, 'size': number, 'update_type': string}."},
+              {"name": "bids", "type": "array of objects", "description": "Array of {'id': string, 'price': number, 'size': number, 'update_type': string}."}
+            ]
+          },
+          {
+            "name": "ohlcv",
+            "description": "OHLCV updates per symbol.",
+            "payloadFields": [
+              {"name": "type", "type": "string", "description": "Always 'ohlcv'."},
+              {"name": "symbol_id", "type": "string"},
+              {"name": "sequence", "type": "number"},
+              {"name": "time_period_start", "type": "string"},
+              {"name": "time_period_end", "type": "string"},
+              {"name": "time_open", "type": "string"},
+              {"name": "time_close", "type": "string"},
+              {"name": "price_open", "type": "number"},
+              {"name": "price_high", "type": "number"},
+              {"name": "price_low", "type": "number"},
+              {"name": "price_close", "type": "number"},
+              {"name": "volume_traded", "type": "number"},
+              {"name": "trades_count", "type": "number"}
+            ]
+          },
+          {
+            "name": "exrate",
+            "description": "Exchange rate updates (VWAP-24H).",
+            "payloadFields": [
+              {"name": "type", "type": "string", "description": "Always 'exrate'."},
+              {"name": "asset_id_base", "type": "string"},
+              {"name": "asset_id_quote", "type": "string"},
+              {"name": "rate_type", "type": "string"},
+              {"name": "time", "type": "string"},
+              {"name": "rate", "type": "number"}
+            ]
+          },
+          {
+            "name": "asset",
+            "description": "Assets metadata feed."
+          },
+          {
+            "name": "exchange",
+            "description": "Exchanges metadata feed."
+          },
+          {
+            "name": "symbol",
+            "description": "Symbols metadata feed."
+          }
+        ],
+        "specialMessages": [
+          {
+            "name": "reconnect",
+            "description": "Sent by the server before a planned restart or shutdown. Client should expect disconnection after the specified time and reconnect.",
+            "payloadFields": [
+              {"name": "type", "type": "string", "description": "Always 'reconnect'."},
+              {"name": "within_seconds", "type": "number"},
+              {"name": "before_time", "type": "string"}
+            ]
+          },
+          {
+            "name": "heartbeat",
+            "description": "Sent every second of inactivity if enabled in the 'hello' message. Used to verify connection liveness.",
+            "payloadFields": [
+              {"name": "type", "type": "string", "description": "Always 'heartbeat'."}
+            ]
+          }
+        ],
+        "errorHandling": {
+          "description": "When an error occurs, an error message is sent and the server closes the connection. All errors are permanent for that connection.",
+          "errorPayload": [
+            {"name": "type", "type": "string", "description": "Always 'error'."},
+            {"name": "message", "type": "string", "description": "Description of the error."}
+          ],
+          "specificErrors": [
+            {
+              "message": "Invalid API key"
+            },
+            {
+              "message": "Reached maximum allowed buffered messages for this connection."
+            }
+          ]
+        },
+        "bestPractices": [
+          {
+            "area": "Protocol Compliance",
+            "points": [
+              "Client implementation must comply with WebSocket protocol v13 (RFC6455).",
+              "Client must respond to every 'Ping' message from the server with a 'Pong' message to keep the connection alive."
+            ]
+          },
+          {
+            "area": "Data Consumption",
+            "points": [
+              "To avoid data buffering disconnects, read from the stream on a dedicated thread and pass data to other threads for processing.",
+              "Ensure sufficient network bandwidth to handle data spikes.",
+              "Monitor the difference between `time_coinapi` in messages and the client's synchronized clock to detect processing delays."
+            ]
+          },
+          {
+            "area": "Connection Management",
+            "points": [
+              "Use heartbeat messages to distinguish between a quiet market and a broken connection.",
+              "Implement a strategy for handling the 'reconnect' message, such as establishing a new connection before the old one is terminated for a seamless transition."
+            ]
+          },
+          {
+            "area": "Error Management",
+            "points": [
+              "Log all error messages received from the server for later review and debugging."
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

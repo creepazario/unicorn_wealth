@@ -10,43 +10,80 @@ from core.config_loader import load_settings  # noqa: E402
 
 def test_load_settings_basic_fields():
     s = load_settings()
-    assert s.coinapi_api_key == "your_amberdata_key"
-    assert s.santiment_api_key == "your_santiment_key"
-    assert s.coinmarketcap_api_key == "your_cmc_key"
-    assert s.finnhub_api_key == "your_finnhub_key"
+    # API keys should be present as non-empty strings
+    # (avoid asserting specific secret values)
+    assert isinstance(s.coinapi_api_key, str) and s.coinapi_api_key
+    assert isinstance(s.santiment_api_key, str) and s.santiment_api_key
+    assert isinstance(s.coinmarketcap_api_key, str) and s.coinmarketcap_api_key
+    assert isinstance(s.finnhub_api_key, str) and s.finnhub_api_key
 
+    # DB URL format
+    assert isinstance(s.database_url, str)
     assert s.database_url.startswith("postgresql+asyncpg://")
 
-    assert s.telegram_api_id == "your_api_id"
-    assert s.telegram_api_hash == "your_api_hash"
-    assert s.telegram_bot_token == "your_bot_token"
-    assert s.telegram_admin_channel_id == "your_admin_channel_id"
-    assert s.telegram_trade_channel_id == "your_trade_channel_id"
+    # Telegram settings should be present as non-empty strings
+    assert isinstance(s.telegram_api_id, str) and s.telegram_api_id
+    assert isinstance(s.telegram_api_hash, str) and s.telegram_api_hash
+    assert isinstance(s.telegram_bot_token, str) and s.telegram_bot_token
+    assert isinstance(s.telegram_admin_channel_id, str) and s.telegram_admin_channel_id
+    assert isinstance(s.telegram_trade_channel_id, str) and s.telegram_trade_channel_id
 
 
 def test_nested_exchange_credentials():
     s = load_settings()
 
     # Binance (no passphrase)
-    assert s.binance.unicorn.api_key == "..."
-    assert s.binance.unicorn.api_secret == "..."
+    assert isinstance(s.binance.unicorn.api_key, str) and s.binance.unicorn.api_key
+    assert (
+        isinstance(s.binance.unicorn.api_secret, str) and s.binance.unicorn.api_secret
+    )
     assert s.binance.unicorn.api_passphrase is None
-    assert s.binance.personal.api_key == "..."
-    assert s.binance.personal.api_secret == "..."
+    assert isinstance(s.binance.personal.api_key, str) and s.binance.personal.api_key
+    assert (
+        isinstance(s.binance.personal.api_secret, str) and s.binance.personal.api_secret
+    )
     assert s.binance.personal.api_passphrase is None
 
-    # Bitget (with passphrase)
-    assert s.bitget.unicorn.api_key == "..."
-    assert s.bitget.unicorn.api_secret == "..."
-    assert s.bitget.unicorn.api_passphrase == "..."
-    assert s.bitget.personal.api_key == "..."
-    assert s.bitget.personal.api_secret == "..."
-    assert s.bitget.personal.api_passphrase == "..."
+    # Bitget (with passphrase) - unicorn may be unset in some environments
+    unicorn_key = s.bitget.unicorn.api_key
+    unicorn_secret = s.bitget.unicorn.api_secret
+    unicorn_pass = s.bitget.unicorn.api_passphrase
+    assert (unicorn_key is None) or (isinstance(unicorn_key, str) and unicorn_key)
+    assert (unicorn_secret is None) or (
+        isinstance(unicorn_secret, str) and unicorn_secret
+    )
+    assert (unicorn_pass is None) or (isinstance(unicorn_pass, str) and unicorn_pass)
 
-    # Kucoin (with passphrase)
-    assert s.kucoin.unicorn.api_key == "..."
-    assert s.kucoin.unicorn.api_secret == "..."
-    assert s.kucoin.unicorn.api_passphrase == "..."
-    assert s.kucoin.personal.api_key == "..."
-    assert s.kucoin.personal.api_secret == "..."
-    assert s.kucoin.personal.api_passphrase == "..."
+    # Personal should be present
+    assert isinstance(s.bitget.personal.api_key, str) and s.bitget.personal.api_key
+    assert (
+        isinstance(s.bitget.personal.api_secret, str) and s.bitget.personal.api_secret
+    )
+    assert (
+        isinstance(s.bitget.personal.api_passphrase, str)
+        and s.bitget.personal.api_passphrase
+    )
+
+    # Kucoin (with passphrase) - unicorn may be unset
+    ku_unicorn_key = s.kucoin.unicorn.api_key
+    ku_unicorn_secret = s.kucoin.unicorn.api_secret
+    ku_unicorn_pass = s.kucoin.unicorn.api_passphrase
+    assert (ku_unicorn_key is None) or (
+        isinstance(ku_unicorn_key, str) and ku_unicorn_key
+    )
+    assert (ku_unicorn_secret is None) or (
+        isinstance(ku_unicorn_secret, str) and ku_unicorn_secret
+    )
+    assert (ku_unicorn_pass is None) or (
+        isinstance(ku_unicorn_pass, str) and ku_unicorn_pass
+    )
+
+    # Personal should be present
+    assert isinstance(s.kucoin.personal.api_key, str) and s.kucoin.personal.api_key
+    assert (
+        isinstance(s.kucoin.personal.api_secret, str) and s.kucoin.personal.api_secret
+    )
+    assert (
+        isinstance(s.kucoin.personal.api_passphrase, str)
+        and s.kucoin.personal.api_passphrase
+    )

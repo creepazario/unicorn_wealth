@@ -1,0 +1,119 @@
+
+# Optuna Hyperparameter Ranges for Technical Indicators
+
+This document outlines the suggested ranges for Optuna optimization when tuning the settings for technical indicators. These ranges are intentionally broad to allow for thorough exploration. Assume `trial.suggest_int()` will be used for window/period settings and `trial.suggest_float()` for multipliers.
+
+***Where setting ranges are not listed, Optuna is to optimise and find settings as appropriate***
+
+## 1. ADX (ta.trend.ADXIndicator)
+Parameter: `window`
+
+*   **15m:** Low: 5, High: 50 (int)
+*   **1h:** Low: 5, High: 50 (int)
+*   **4h:** Low: 5, High: 40 (int)
+*   **1d:** Low: 5, High: 30 (int)
+
+## 2. ATR (ta.volatility.AverageTrueRange)
+Parameter: `window`
+
+*   **15m:** Low: 5, High: 50 (int)
+*   **1h:** Low: 5, High: 50 (int)
+*   **4h:** Low: 5, High: 40 (int)
+*   **1d:** Low: 5, High: 30 (int)
+
+## 3. Bollinger Bands (ta.volatility.BollingerBands)
+Parameters: `window` (Moving Average Length), `window_dev` (Standard Deviation Multiplier)
+
+*   **15m:**
+    *   `window`: Low: 10, High: 100 (int)
+    *   `window_dev`: Low: 1.0, High: 3.5 (float)
+*   **1h:**
+    *   `window`: Low: 10, High: 100 (int)
+    *   `window_dev`: Low: 1.0, High: 3.5 (float)
+*   **4h:**
+    *   `window`: Low: 10, High: 60 (int)
+    *   `window_dev`: Low: 1.0, High: 3.5 (float)
+*   **1d:**
+    *   `window`: Low: 10, High: 50 (int)
+    *   `window_dev`: Low: 1.5, High: 3.0 (float)
+
+## 4. Chaikin Money Flow (ta.volume.ChaikinMoneyFlowIndicator)
+Parameter: `window`
+
+*   **15m:** Low: 10, High: 60 (int)
+*   **1h:** Low: 10, High: 60 (int)
+*   **4h:** Low: 10, High: 50 (int)
+*   **1d:** Low: 10, High: 40 (int)
+
+## 5. Exponential Moving Averages (EMA) (ta.trend.EMAIndicator)
+Parameter: `window`
+**Constraint:** Ensure the implementation enforces `EMA_Fast < EMA_Mid < EMA_Slow`.
+
+### EMA - FAST
+*   **15m:** Low: 5, High: 30 (int)
+*   **1h:** Low: 5, High: 30 (int)
+*   **4h:** Low: 5, High: 25 (int)
+*   **1d:** Low: 5, High: 20 (int)
+
+### EMA - MID
+*   **15m:** Low: 30, High: 100 (int)
+*   **1h:** Low: 30, High: 100 (int)
+*   **4h:** Low: 25, High: 80 (int)
+*   **1d:** Low: 20, High: 60 (int)
+
+### EMA - SLOW
+*   **15m:** Low: 100, High: 250 (int)
+*   **1h:** Low: 100, High: 250 (int)
+*   **4h:** Low: 80, High: 200 (int)
+*   **1d:** Low: 60, High: 150 (int)
+
+## 6. MACD (ta.trend.MACD)
+Parameters: `window_fast`, `window_slow`, `window_sign`
+**Constraint:** Ensure the implementation enforces `window_fast < window_slow`.
+
+*   **15m, 1h, 4h:**
+    *   `window_fast`: Low: 5, High: 25 (int)
+    *   `window_slow`: Low: 25, High: 80 (int)
+    *   `window_sign`: Low: 5, High: 20 (int)
+*   **1d:**
+    *   `window_fast`: Low: 5, High: 15 (int)
+    *   `window_slow`: Low: 15, High: 50 (int)
+    *   `window_sign`: Low: 5, High: 15 (int)
+
+## 7. MFI (ta.volume.MFIIndicator)
+Parameter: `window`
+
+*   **15m:** Low: 5, High: 50 (int)
+
+## 8. OBV (ta.volume.OnBalanceVolumeIndicator)
+Intervals: 15m, 1h
+*   Note: The standard implementation of OBV in the `ta` library has no adjustable parameters.
+
+## 9. Parkinson Volatility
+Parameter: `window`
+
+*   **15m:** Low: 5, High: 50 (int)
+
+## 10. RSI (ta.momentum.RSIIndicator)
+Parameter: `window`
+
+*   **15m:** Low: 5, High: 50 (int)
+*   **1h:** Low: 5, High: 50 (int)
+*   **4h:** Low: 5, High: 40 (int)
+*   **1d:** Low: 5, High: 30 (int)
+
+## 11. Smart Money Concepts (SMC)
+Parameter: `Swing Length`
+
+*   **15m:** Low: 3, High: 100 (int)
+*   **1h:** Low: 3, High: 100 (int)
+*   **4h:** Low: 3, High: 80 (int)
+*   **1d:** Low: 3, High: 50 (int)
+
+## 12. SMA (For Volume Specifically) (ta.trend.SMAIndicator)
+Parameter: `window`
+
+*   **15m:** Low: 5, High: 100 (int)
+*   **1h:** Low: 5, High: 100 (int)
+
+#VWAP - VWAP to be excluded from Optuna optimization

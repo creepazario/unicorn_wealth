@@ -71,10 +71,15 @@ except Exception:  # pragma: no cover - pydantic v2
 
 
 class AccountCredentials(BaseModel):
-    """Credentials for a single account on an exchange."""
+    """Credentials for a single account on an exchange.
 
-    api_key: str
-    api_secret: str
+    Note: api_key and api_secret are Optional to allow representing
+    exchanges/accounts that are not configured in the environment.
+    Consumers should validate presence where required.
+    """
+
+    api_key: Optional[str] = None
+    api_secret: Optional[str] = None
     api_passphrase: Optional[str] = None
 
 

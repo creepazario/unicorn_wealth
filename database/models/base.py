@@ -3,6 +3,12 @@ from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
+# Try to load TimescaleDB SQLAlchemy plugin to register hypertable args if available
+try:  # pragma: no cover - only needed when package is installed
+    import sqlalchemy_timescaledb  # type: ignore  # noqa: F401
+except Exception:  # pragma: no cover - safely ignore if not installed
+    pass
+
 try:  # Prefer async-compatible pool when available
     from sqlalchemy.ext.asyncio.pool import (
         AsyncAdaptedQueuePool as _AsyncQueuePool,

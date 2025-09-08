@@ -1,0 +1,160 @@
+{
+  "apiReference": {
+    "providers": [
+      {
+        "name": "CoinAPI",
+        "authentication": "Requires an API Key passed as an environment variable named COINAPI_API_KEY.",
+        "notes": "For Spot Data, the symbol ID follows the format BINANCE_SPOT_BTC_USDT. For Futures Data (mark price & funding rate), the symbol ID follows the format BINANCEFTS_PERP_BTC_USDT. Always use Binance.",
+        "endpoints": [
+          {
+            "id": "1.1",
+            "title": "Futures Funding Rate",
+            "method": "GET",
+            "url": "https://rest.coinapi.io/v1/metrics/symbol/history",
+            "parameters": [
+              {"name": "metric_id", "type": "string", "location": "Query", "required": true, "description": "Metric to retrieve. Use 'DERIVATIVES_FUNDING_RATE_CURRENT'."},
+              {"name": "symbol_id", "type": "string", "location": "Query", "required": true, "description": "Futures symbol ID, e.g., 'BINANCEFTS_PERP_ETH_USDT'."},
+              {"name": "time_start", "type": "string", "location": "Query", "required": true, "description": "Start timestamp (ISO 8601)."},
+              {"name": "time_end", "type": "string", "location": "Query", "required": false, "description": "End timestamp (ISO 8601)."},
+              {"name": "period_id", "type": "string", "location": "Query", "required": true, "description": "Interval of time, e.g., '15MIN'."}
+            ]
+          },
+          {
+            "id": "1.2",
+            "title": "Futures Mark Price",
+            "method": "GET",
+            "url": "https://rest.coinapi.io/v1/metrics/symbol/history",
+            "parameters": [
+              {"name": "metric_id", "type": "string", "location": "Query", "required": true, "description": "Metric to retrieve. Use 'DERIVATIVES_MARK_PRICE'."},
+              {"name": "symbol_id", "type": "string", "location": "Query", "required": true, "description": "Futures symbol ID, e.g., 'BINANCEFTS_PERP_ETH_USDT'."},
+              {"name": "time_start", "type": "string", "location": "Query", "required": true, "description": "Start timestamp (ISO 8601)."},
+              {"name": "time_end", "type": "string", "location": "Query", "required": false, "description": "End timestamp (ISO 8601)."},
+              {"name": "period_id", "type": "string", "location": "Query", "required": true, "description": "Interval of time, e.g., '15MIN'."}
+            ]
+          },
+          {
+            "id": "1.3",
+            "title": "Spot OHLCV",
+            "method": "GET",
+            "url": "https://rest.coinapi.io/v1/ohlcv/{symbol_id}/history",
+            "parameters": [
+              {"name": "symbol_id", "type": "string", "location": "Path", "required": true, "description": "Spot symbol ID, e.g., 'BINANCE_SPOT_BTC_USDT'."},
+              {"name": "period_id", "type": "string", "location": "Query", "required": true, "description": "Interval of time, e.g., '15MIN'."},
+              {"name": "time_start", "type": "string", "location": "Query", "required": true, "description": "Start timestamp (ISO 8601)."},
+              {"name": "time_end", "type": "string", "location": "Query", "required": false, "description": "End timestamp (ISO 8601)."}
+            ]
+          },
+          {
+            "id": "1.4",
+            "title": "Futures/Perpetual OHLCV",
+            "method": "GET",
+            "url": "https://rest.coinapi.io/v1/ohlcv/{symbol_id}/history",
+            "parameters": [
+              {"name": "symbol_id", "type": "string", "location": "Path", "required": true, "description": "Futures symbol ID, e.g., 'BINANCEFTS_PERP_BTC_USDT'."},
+              {"name": "period_id", "type": "string", "location": "Query", "required": true, "description": "Interval of time, e.g., '15MIN'."},
+              {"name": "time_start", "type": "string", "location": "Query", "required": true, "description": "Start timestamp (ISO 8601)."},
+              {"name": "time_end", "type": "string", "location": "Query", "required": false, "description": "End timestamp (ISO 8601)."}
+            ]
+          }
+        ]
+      },
+      {
+        "name": "Santiment",
+        "authentication": "Requires an API Key passed as an environment variable named SANTIMENT_API_KEY.",
+        "notes": "Santiment is a GraphQL API. The sanpy Python wrapper is also available (pip install sanpy).",
+        "endpoints": [
+          {"id": "2.1", "title": "Active Addresses 24h", "metric": "active_addresses_24h"},
+          {"id": "2.2", "title": "MVRV Long Short Differential", "metric": "mvrv_long_short_diff_usd"},
+          {"id": "2.3", "title": "Network Profit Loss", "metric": "network_profit_loss"},
+          {"id": "2.4", "title": "Exchange Open Interest", "metric": "exchange_open_interest"},
+          {"id": "2.5", "title": "Percent of Total Supply on Exchanges", "metric": "percent_of_total_supply_on_exchanges"},
+          {"id": "2.6", "title": "Transaction Volume USD", "metric": "transaction_volume_usd"},
+          {"id": "2.7", "title": "Fees Burnt USD", "metric": "fees_burnt_5m"},
+          {"id": "2.8", "title": "Fees USD Intraday", "metric": "fees_usd_intraday"},
+          {"id": "2.9", "title": "Median Fees USD", "metric": "median_fees_usd_5m"},
+          {"id": "2.10", "title": "Total Gas Used", "metric": "total_gas_used"},
+          {"id": "2.11", "title": "Sentiment Weighted Total", "metric": "sentiment_weighted_total"},
+          {"id": "2.12", "title": "Social Dominance Total", "metric": "social_dominance_total"},
+          {"id": "2.13", "title": "ETF Flow", "metric": "daily_etf_flow"}
+        ]
+      },
+      {
+        "name": "CoinMarketCap",
+        "authentication": "Requires an API Key passed as an environment variable named COINMARKETCAP_API_KEY.",
+        "endpoints": [
+          {
+            "id": "3.1",
+            "title": "Cryptocurrency Quotes Historical v2",
+            "method": "GET",
+            "url": "https://pro-api.coinmarketcap.com/v2/cryptocurrency/quotes/historical",
+            "parameters": [
+              {"name": "id", "type": "string", "default": null, "description": "One or more comma-separated CoinMarketCap cryptocurrency IDs (e.g., \"1,2\")."},
+              {"name": "symbol", "type": "string", "default": null, "description": "Alternatively, one or more comma-separated symbols (e.g., \"BTC,ETH\")."},
+              {"name": "time_start", "type": "string", "default": null, "description": "Start timestamp (Unix or ISO 8601)."},
+              {"name": "time_end", "type": "string", "default": null, "description": "End timestamp (Unix or ISO 8601)."},
+              {"name": "count", "type": "number", "default": 10, "description": "Number of interval periods to return. Max 10000."},
+              {"name": "interval", "type": "string", "default": "5m", "description": "Interval of time. E.g., \"5m\", \"1h\", \"1d\", \"monthly\"."},
+              {"name": "convert", "type": "string", "default": null, "description": "Return quotes in other fiat or cryptocurrencies."},
+              {"name": "convert_id", "type": "string", "default": null, "description": "Same as convert, but using CoinMarketCap IDs."},
+              {"name": "aux", "type": "string", "default": null, "description": "Comma-separated list of supplemental data fields to return."},
+              {"name": "skip_invalid", "type": "boolean", "default": true, "description": "true to skip invalid lookups and not return an error."}
+            ]
+          },
+          {
+            "id": "3.2",
+            "title": "Global Metrics Quotes Historical",
+            "method": "GET",
+            "url": "https://pro-api.coinmarketcap.com/v1/global-metrics/quotes/historical",
+            "parameters": [
+              {"name": "time_start", "type": "string", "default": null, "description": "Start timestamp (Unix or ISO 8601)."},
+              {"name": "time_end", "type": "string", "default": null, "description": "End timestamp (Unix or ISO 8601)."},
+              {"name": "count", "type": "number", "default": 10, "description": "Number of interval periods to return. Max 10000."},
+              {"name": "interval", "type": "string", "default": "1d", "description": "Interval of time. E.g., \"5m\", \"1h\", \"1d\", \"monthly\"."},
+              {"name": "convert", "type": "string", "default": null, "description": "Return quotes in other fiat or cryptocurrencies."},
+              {"name": "convert_id", "type": "string", "default": null, "description": "Same as convert, but using CoinMarketCap IDs."},
+              {"name": "aux", "type": "string", "default": null, "description": "Comma-separated list of supplemental data fields to return."}
+            ]
+          },
+          {
+            "id": "3.3",
+            "title": "Fear and Greed",
+            "method": "GET",
+            "url": "https://pro-api.coinmarketcap.com/v3/fear-and-greed/historical",
+            "parameters": [
+              {"name": "start", "type": "integer", "default": 1, "description": "Offset the start (1-based index) of the paginated list."},
+              {"name": "limit", "type": "integer", "default": 50, "description": "Number of results to return. Max 500."}
+            ]
+          }
+        ]
+      },
+      {
+        "name": "Finnhub",
+        "authentication": "Requires an API Key passed as an environment variable named FINNHUB_API_KEY.",
+        "endpoints": [
+          {
+            "id": "4.1",
+            "title": "Economic Calendar",
+            "method": "GET",
+            "url": "/calendar/economic",
+            "notes": "Premium Access Required",
+            "parameters": [
+              {"name": "from", "type": "string", "location": "Query", "required": false, "description": "From date YYYY-MM-DD."},
+              {"name": "to", "type": "string", "location": "Query", "required": false, "description": "To date YYYY-MM-DD."}
+            ],
+            "responseAttributes": [
+              {"name": "economicCalendar", "type": "array", "description": "Array of economic events."},
+              {"name": "actual", "type": "number", "description": "Actual release value."},
+              {"name": "country", "type": "string", "description": "Country of the event."},
+              {"name": "estimate", "type": "number", "description": "Estimated value."},
+              {"name": "event", "type": "string", "description": "Name of the event."},
+              {"name": "impact", "type": "string", "description": "Impact level of the event."},
+              {"name": "prev", "type": "number", "description": "Previous release value."},
+              {"name": "time", "type": "string", "description": "Release time of the event."},
+              {"name": "unit", "type": "string", "description": "Unit of the value."}
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
