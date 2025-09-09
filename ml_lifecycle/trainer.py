@@ -16,7 +16,11 @@ from catboost import CatBoostClassifier
 from sklearn.metrics import accuracy_score, f1_score, log_loss
 
 import mlflow
-import mlflow.catboost  # noqa: F401  # required for model logging flavor registration
+
+try:  # optional flavor registration; do not fail tests if missing
+    import mlflow.catboost  # noqa: F401  # required for model logging flavor registration
+except Exception:  # pragma: no cover - optional dependency not available in CI/tests
+    pass
 
 try:  # Prefer relative import when available
     from .data_preparer import PreparedData

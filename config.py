@@ -100,3 +100,11 @@ TRAIN_TEST_SPLIT_PCT = 0.8
 VALIDATION_SPLIT_PCT = 0.1  # of the total dataset, not the training set
 TIME_DECAY_HALF_LIFE_MONTHS = 6
 TIME_DECAY_WEIGHT_FLOOR = 0.1
+
+# --- BACKTESTING SETTINGS ---
+BACKTESTING_SETTINGS = {
+    "SLIPPAGE_PCT": 0.05,  # per fill, percent
+    "TAKER_FEE": 0.04,  # per fill, percent
+    # Challenger Sharpe must be 10% higher than Champion to be promoted
+    "CHAMPION_PROMOTION_THRESHOLD_PCT": 10.0,
+}
