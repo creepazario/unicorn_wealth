@@ -62,6 +62,8 @@ class ModelTrainer:
         the current MLflow experiment remains unchanged.
     horizons:
         Optional iterable of horizons to train. Defaults to ("1h", "4h", "8h").
+    model_params:
+        Optional dictionary of CatBoost hyperparameters to pass to the classifier.
     """
 
     def __init__(
@@ -69,10 +71,12 @@ class ModelTrainer:
         prepared_data: Mapping[str, PreparedData],
         experiment_name: Optional[str] = None,
         horizons: Optional[Iterable[str]] = None,
+        model_params: Optional[Mapping[str, object]] = None,
     ) -> None:
         self.prepared_data = dict(prepared_data)
         self.horizons = tuple(horizons) if horizons is not None else ("1h", "4h", "8h")
         self.experiment_name = experiment_name
+        self.model_params = dict(model_params) if model_params is not None else {}
 
     def _train_single_horizon(self, horizon: str, data: PreparedData) -> _TrainResult:
         """Train a single CatBoost model on a given horizon and compute metrics."""
@@ -107,6 +111,14 @@ class ModelTrainer:
             "task_type": "GPU",
             # Rely on CatBoost defaults; CatBoost auto-detects multiclass if applicable.
         }
+        # Merge in externally provided model hyperparameters, if any
+        if self.model_params:
+            # Avoid overriding task_type unless explicitly provided
+            merged = {
+                **params,
+                **{k: v for k, v in self.model_params.items() if v is not None},
+            }
+            params = merged
         model = CatBoostClassifier(**params)
 
         # Fit with GPU, fallback to CPU if GPU is unavailable
@@ -185,7 +197,7 @@ class ModelTrainer:
             mlflow.set_experiment(self.experiment_name)
 
         trained: Dict[str, CatBoostClassifier] = {}
-        with mlflow.start_run(run_name="UnicornWealth_Training_Run"):
+        with mlflow.start_run(run_name="UnicornWealth_Training_Run", nested=True):
             for horizon in self.horizons:
                 pdata = self.prepared_data.get(horizon)
                 if pdata is None:

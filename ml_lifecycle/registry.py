@@ -20,6 +20,18 @@ import logging
 import mlflow
 from mlflow.tracking import MlflowClient
 
+# Provide a fallback for mlflow.register_model to enable patching in tests
+# Some environments may load a minimal mlflow namespace lacking this attribute.
+if not hasattr(mlflow, "register_model"):  # pragma: no cover - test-time safeguard
+
+    def _missing_register_model(*args, **kwargs):  # pragma: no cover
+        raise AttributeError("mlflow.register_model is not available")
+
+    try:  # Avoid failing if mlflow module is immutable in this environment
+        setattr(mlflow, "register_model", _missing_register_model)
+    except Exception:  # pragma: no cover - best-effort only
+        pass
+
 __all__ = ["ModelRegistryManager"]
 
 logger = logging.getLogger(__name__)

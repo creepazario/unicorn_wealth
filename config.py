@@ -108,3 +108,10 @@ BACKTESTING_SETTINGS = {
     # Challenger Sharpe must be 10% higher than Champion to be promoted
     "CHAMPION_PROMOTION_THRESHOLD_PCT": 10.0,
 }
+
+# --- WALK-FORWARD OPTIMIZATION (WFO) SETTINGS ---
+WFO_SETTINGS = {
+    "TRAINING_WINDOW_MONTHS": 12,
+    "VALIDATION_WINDOW_MONTHS": 3,
+    "STEP_SIZE_MONTHS": 3,
+}
