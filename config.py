@@ -91,3 +91,12 @@ API_CLIENT_SETTINGS = {
         "RESET_TIMEOUT": 60,
     },
 }
+
+# --- ML TRAINING SETTINGS ---
+# Split proportions are relative to the total dataset size.
+# Train portion is TRAIN_TEST_SPLIT_PCT minus VALIDATION_SPLIT_PCT, validation is VALIDATION_SPLIT_PCT,
+# and the remainder is the test set.
+TRAIN_TEST_SPLIT_PCT = 0.8
+VALIDATION_SPLIT_PCT = 0.1  # of the total dataset, not the training set
+TIME_DECAY_HALF_LIFE_MONTHS = 6
+TIME_DECAY_WEIGHT_FLOOR = 0.1
