@@ -3,25 +3,13 @@ from typing import Set
 import pytest
 import sqlalchemy as sa
 
-try:
-    from core.config_loader import load_settings
-    from database.models.base import Base, get_async_engine
-    from database.models import (  # noqa: F401
-        raw_data as _raw_data,
-        feature_stores as _feature_stores,
-        operational as _operational,
-    )
-except Exception:  # pragma: no cover - fallback when running as package
-    from unicorn_wealth.core.config_loader import load_settings  # type: ignore
-    from unicorn_wealth.database.models.base import (  # type: ignore
-        Base,
-        get_async_engine,
-    )
-    from unicorn_wealth.database.models import (  # type: ignore # noqa: F401
-        raw_data as _raw_data,
-        feature_stores as _feature_stores,
-        operational as _operational,
-    )
+from core.config_loader import load_settings
+from database.models.base import Base, get_async_engine
+from database.models import (  # noqa: F401
+    raw_data as _raw_data,
+    feature_stores as _feature_stores,
+    operational as _operational,
+)
 
 
 @pytest.mark.asyncio

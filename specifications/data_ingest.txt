@@ -1,0 +1,303 @@
+Unicorn Wealth — Adding a New Non‑OHLCV Historical Data Source (Using OHLCV as Reference)
+
+Purpose
+This guide explains how to introduce new historical data sources that are NOT OHLCV (e.g., funding rates, open interest, social metrics, on‑chain metrics, order book stats). Use the existing OHLCV ingestion flow as a reference for architecture, quality gates, and persistence patterns, but adapt schemas, normalization, and persistence targets to your dataset.
+
+What you will implement
+- A new async API client under data_ingestion/api/ that subclasses BaseAPIClient and exposes fetch_data returning a pandas DataFrame with a standardized timestamp column.
+- Historical fetching logic (pagination/range windows) tailored to the provider’s limits.
+- Normalization to a dataset‑specific schema (e.g., funding_rates, social_metrics, open_interest, etc.), including timestamp → epoch ms and token identification.
+- Persistence into the appropriate raw_* table via RawDataSQLEngine.save_data(df, table_name).
+- If your dataset is new (no table exists), add a new ORM model under database/models/raw_data.py and create a migration to provision the table.
+
+Architecture reference (read first)
+- Base client (do not modify): data_ingestion/api/base_client.py
+  - Provides: retries (tenacity), circuit breaker (pybreaker), simple rate limiting, and standardized DataFrame post‑processing to enforce a timestamp column when possible.
+  - Contract: subclass must implement _build_request, _send_request, _parse_response.
+  - fetch_data handles rate limiting, retries, and converts known time columns to pandas datetime[UTC].
+- Example provider: data_ingestion/api/coinapi_client.py
+  - Shows request construction, authorization headers, and parsing JSON payloads to DataFrames.
+  - Even though it supports OHLCV and metrics, use it as a reference for structure and error handling.
+- Database engine: database/sql_engine.py
+  - RawDataSQLEngine.save_data(df, table_name) performs PostgreSQL upserts into any target table. DataFrame columns must match the target table.
+- Existing non‑OHLCV models (examples): database/models/raw_data.py
+  - RawFundingRates: columns [timestamp (BigInt), token (String), rate (Float)]
+  - RawSocialMetrics: columns [timestamp (BigInt), token (String), social_dominance (Float), sentiment (Float)]
+
+Step‑by‑step instructions
+
+1) Add configuration and credentials
+- Add provider API key(s) to our Settings model for runtime injection:
+  - File: core/config_loader.py (class Settings)
+  - Add a new field, e.g., myprovider_api_key: Optional[str] = None
+  - Ensure .env contains MYPROVIDER_API_KEY=<your_key>
+- If provider uses symbol identifiers different from our token keys (config.MASTER_TOKEN_LIST), extend the mapping, e.g.:
+  - config.py: MASTER_TOKEN_LIST["BTC"]["myprovider_symbol_id"] = "BINANCE:BTCUSDT"
+
+2) Define the target storage schema (table)
+- Determine whether a suitable raw_* table already exists in database/models/raw_data.py. If yes, reuse it.
+  - Examples already present: RawFundingRates (raw_funding_rates), RawSocialMetrics (raw_social_metrics)
+- If the dataset is new, add a new ORM model in database/models/raw_data.py:
+  - Naming: class Raw<MyDataset>(Base) with __tablename__ = "raw_<my_dataset>"
+  - Columns: at minimum timestamp (BigInteger, indexed) and token (String, indexed), plus dataset fields.
+  - Constraints: For append‑only series, prefer a unique constraint on (timestamp, token) to enable upsert idempotency. If you need per‑venue granularity, include venue/source in the uniqueness constraint and DataFrame.
+  - TimescaleDB: Follow the module’s pattern (TIMESCALEDB_ARGS) for hypertable configuration if used by your table.
+- Create an Alembic migration to add the new table in the database (ensure production DB is provisioned before running the pipeline). If migrations are managed elsewhere, align with that process.
+
+3) Implement a new client class
+- Create file: data_ingestion/api/myprovider_client.py
+- Subclass BaseAPIClient and implement:
+  - async def _build_request(self, **kwargs) -> Tuple[str, Dict[str, Any]]
+    - Accept parameters needed for your provider (symbol_id, metric_id, period_id, time_start, optional time_end, limit, etc.).
+    - Construct full URL and query params according to the API spec.
+  - async def _send_request(self, url: str, params: Dict[str, Any]) -> Dict[str, Any] | List[Dict[str, Any]]
+    - Use self.session.get(...), set authorization headers (e.g., API key), and a reasonable timeout.
+    - Raise for HTTP errors; return parsed JSON.
+  - def _parse_response(self, response: Any) -> pd.DataFrame
+    - Convert payload to a DataFrame.
+    - Ensure a 'timestamp' column exists (rename from time, datetime, time_period_start, etc.).
+    - Keep provider’s native field names; normalization will adapt them to the DB schema.
+- BaseAPIClient.fetch_data will perform rate limiting, retries, circuit breaker, and convert recognized time columns to datetime[UTC].
+
+4) Map symbols and provider parameters
+- Map our internal token names (e.g., BTC, ETH) to provider symbol identifiers using config.MASTER_TOKEN_LIST when necessary (e.g., MASTER_TOKEN_LIST[token]["myprovider_symbol_id"]).
+- Determine any provider‑specific parameters like metric_id (e.g., for funding rates), category, or aggregation interval.
+- Not all non‑OHLCV datasets are interval‑based; if interval is required (e.g., hourly funding), define a mapping similar to OHLCV but tailored to the dataset (e.g., {"1h": "1H", "8h": "8H"}).
+
+5) Historical fetching and pagination windows
+- Follow the windowing pattern used in main.py::_fetch_and_store_for_token, adapted for your dataset.
+  - Compute a [start_time, end_time] window to backfill.
+  - If provider enforces max results per call, iterate across sub‑windows until the range is covered.
+  - Advance current_start to last_timestamp_in_df + one_step if the dataset is interval‑based. If event‑based (irregular), advance using the last returned timestamp.
+  - Honor provider rate limits via rate_limit_per_sec and/or delays.
+- Pseudocode skeleton:
+  current = window_start
+  while current < window_end:
+      next_end = min(current + max_span, window_end)
+      df_chunk = await client.fetch_data(
+          symbol_id=symbol_id,
+          metric_id=metric_id,        # if applicable
+          period_id=period_id,        # if applicable
+          time_start=current.isoformat(),
+          time_end=next_end.isoformat(),
+          limit=MAX_LIMIT,
+      )
+      if df_chunk is empty:
+          current = next_end  # or advance conservatively
+          continue
+      append chunk
+      last_ts = max(df_chunk["timestamp"])  # pandas Timestamp
+      # Advance one interval or tiny offset to avoid duplication
+      current = last_ts + step
+
+6) Normalize to your dataset schema
+- Common rules:
+  - Ensure a 'timestamp' column and convert it to epoch milliseconds (int):
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
+    df = df[df["timestamp"].notna()]
+    df["timestamp"] = (df["timestamp"].astype("int64") // 10**6).astype("int64")
+  - Inject a 'token' column with our internal token symbol (e.g., "BTC"). If venue/source is part of uniqueness, also set df["venue"] = "binance" (example).
+  - Rename provider fields to match the target table columns.
+  - Keep only the columns defined by the table, in a stable order.
+  - Sort by timestamp ascending.
+- Funding rates example (target: raw_funding_rates):
+  - Required columns: ["timestamp", "token", "rate"]
+  - Provider may expose a value column as "value", "v", or "rate" — rename to "rate".
+- Social metrics example (target: raw_social_metrics):
+  - Required columns: ["timestamp", "token", "social_dominance", "sentiment"]
+  - Map provider fields accordingly (e.g., "social_dominance_24h" → "social_dominance").
+
+7) Persist data to the database
+- Build the async SQLAlchemy engine (see database/models/base.get_async_engine or run_historical_pipeline for examples) and create a RawDataSQLEngine:
+  from core.config_loader import load_settings
+  from database.models.base import get_async_engine
+  from database.sql_engine import RawDataSQLEngine
+
+  settings = load_settings()
+  engine = get_async_engine(settings)
+  storage = RawDataSQLEngine(engine)
+
+- Upsert into the target table:
+  await storage.save_data(df, table_name="raw_funding_rates")
+  # or: await storage.save_data(df, table_name="raw_social_metrics")
+
+- Notes:
+  - save_data performs batched upserts (PostgreSQL only). Ensure your environment uses a Postgres backend.
+  - DataFrame must contain only columns present in the target table (extras are filtered automatically, but required columns must exist).
+  - Tables must exist in the DB. Create migrations for any new tables you add.
+
+8) Orchestration and integration points
+- You can integrate your ingestion into any orchestrator (e.g., a new script or an existing pipeline stage). A typical pattern:
+  - Create an aiohttp.ClientSession
+  - Instantiate your client with API key and rate limit
+  - For each token, resolve symbol_id and fetch historical windows
+  - Normalize to target schema and upsert via RawDataSQLEngine.save_data
+- Example async flow snippet:
+  import aiohttp
+  import pandas as pd
+  from data_ingestion.api.myprovider_client import MyProviderClient
+
+  async with aiohttp.ClientSession() as session:
+      client = MyProviderClient(api_key=settings.myprovider_api_key, session=session, rate_limit_per_sec=5)
+      all_chunks = []
+      current = window_start
+      while current < window_end:
+          next_end = min(current + max_span, window_end)
+          df_chunk = await client.fetch_data(symbol_id=symbol_id, metric_id="DERIVATIVES_FUNDING_RATE_CURRENT", period_id="1H", time_start=current.isoformat(), time_end=next_end.isoformat(), limit=10000)
+          if df_chunk is None or df_chunk.empty:
+              current = next_end
+              continue
+          all_chunks.append(df_chunk)
+          last_ts = pd.to_datetime(df_chunk["timestamp"], utc=True).max()
+          current = last_ts + pd.Timedelta(hours=1)
+      raw = pd.concat(all_chunks, ignore_index=True) if all_chunks else pd.DataFrame()
+      df_norm = normalize_funding_rates(raw, token="BTC")
+      await storage.save_data(df_norm, table_name="raw_funding_rates")
+
+9) Testing and validation
+- Use tests/data_ingestion/api/test_coinapi_client.py as a template for client tests:
+  - Patch _send_request to avoid real HTTP and assert that _build_request produces correct URL and params.
+  - Ensure _parse_response returns a DataFrame with a 'timestamp' column.
+- Add unit tests for normalization functions to verify:
+  - Column mapping to the target schema
+  - Timestamp conversion to epoch ms
+  - Token (and venue/source if applicable) injection
+  - Sorting and column set
+- For persistence, run integration tests against a PostgreSQL instance to validate upsert behavior in save_data.
+
+10) Operational considerations
+- Retries & circuit breaker:
+  - Controlled via config.API_CLIENT_SETTINGS (TENACITY_RETRY and CIRCUIT_BREAKER keys) used by BaseAPIClient.
+- Rate limiting:
+  - Pass rate_limit_per_sec to your client constructor based on provider guidance.
+- Secrets:
+  - Keep API credentials only in .env; do not commit secrets.
+- Logging:
+  - Add debug/info logs around request windows, rows fetched, normalization outcomes, and rows saved.
+
+Minimal example client skeleton (non‑OHLCV)
+
+# data_ingestion/api/myprovider_client.py
+from __future__ import annotations
+from typing import Any, Dict, List, Tuple
+import aiohttp
+import pandas as pd
+from data_ingestion.api.base_client import BaseAPIClient
+
+class MyProviderClient(BaseAPIClient):
+    BASE_URL = "https://api.myprovider.com/v1"
+
+    async def _build_request(self, **kwargs: Any) -> Tuple[str, Dict[str, Any]]:
+        endpoint = str(kwargs.get("endpoint", "metrics")).lower()
+        symbol_id = kwargs["symbol_id"]
+        period_id = kwargs.get("period_id")  # some datasets require interval, some don't
+        time_start = kwargs.get("time_start")
+        time_end = kwargs.get("time_end")
+        limit = int(kwargs.get("limit", 1000))
+
+        if endpoint == "metrics":
+            url = f"{self.BASE_URL}/metrics/symbol/history"
+            params: Dict[str, Any] = {
+                "symbol_id": symbol_id,
+                "time_start": time_start,
+                "limit": limit,
+            }
+            if period_id:
+                params["period_id"] = period_id
+            if time_end:
+                params["time_end"] = time_end
+            # Optional: pass metric_id for specific metrics
+            if "metric_id" in kwargs:
+                params["metric_id"] = kwargs["metric_id"]
+            return url, params
+
+        # Generic fallback
+        url = f"{self.BASE_URL}/{endpoint}"
+        params = {"symbol": symbol_id, "start": time_start, "limit": limit}
+        if period_id:
+            params["interval"] = period_id
+        if time_end:
+            params["end"] = time_end
+        return url, params
+
+    async def _send_request(self, url: str, params: Dict[str, Any]) -> Dict[str, Any] | List[Dict[str, Any]]:
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        timeout = aiohttp.ClientTimeout(total=60)
+        async with self.session.get(url, params=params, headers=headers, timeout=timeout) as resp:
+            resp.raise_for_status()
+            return await resp.json()
+
+    def _parse_response(self, response: Any) -> pd.DataFrame:
+        if not response:
+            return pd.DataFrame(columns=["timestamp"])  # empty
+        if isinstance(response, dict) and "error" in response:
+            raise RuntimeError(f"MyProvider error: {response}")
+        df = pd.DataFrame(response)
+        for cand in ("time", "timestamp", "time_period_start", "datetime"):
+            if cand in df.columns:
+                df = df.rename(columns={cand: "timestamp"})
+                break
+        return df
+
+Normalization helpers (examples)
+
+import pandas as pd
+
+def normalize_funding_rates(df: pd.DataFrame, token: str) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["timestamp", "token", "rate"])
+    # Map provider values to 'rate'
+    rename_map = {"value": "rate", "v": "rate", "funding_rate": "rate", "time_period_start": "timestamp", "time": "timestamp"}
+    df = df.rename(columns=rename_map).copy()
+    if "timestamp" not in df.columns:
+        raise ValueError("Input payload missing a recognizable time column for funding rates.")
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
+    df = df[df["timestamp"].notna()]
+    df["timestamp"] = (df["timestamp"].astype("int64") // 10**6).astype("int64")
+    df["token"] = token
+    cols = ["timestamp", "token", "rate"]
+    df = df[[c for c in cols if c in df.columns]]
+    if "timestamp" in df.columns:
+        df = df.sort_values("timestamp", ascending=True)
+    return df
+
+
+def normalize_social_metrics(df: pd.DataFrame, token: str) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["timestamp", "token", "social_dominance", "sentiment"])
+    rename_map = {
+        "time_period_start": "timestamp",
+        "time": "timestamp",
+        "social_dominance_24h": "social_dominance",
+        "social_dominance": "social_dominance",
+        "sentiment_score": "sentiment",
+        "sentiment": "sentiment",
+    }
+    df = df.rename(columns=rename_map).copy()
+    if "timestamp" not in df.columns:
+        raise ValueError("Input payload missing a recognizable time column for social metrics.")
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
+    df = df[df["timestamp"].notna()]
+    df["timestamp"] = (df["timestamp"].astype("int64") // 10**6).astype("int64")
+    df["token"] = token
+    cols = ["timestamp", "token", "social_dominance", "sentiment"]
+    df = df[[c for c in cols if c in df.columns]]
+    if "timestamp" in df.columns:
+        df = df.sort_values("timestamp", ascending=True)
+    return df
+
+Checklist (non‑OHLCV)
+- [ ] Settings field for provider API key added in core/config_loader.Settings and .env updated.
+- [ ] Optional: MASTER_TOKEN_LIST updated with provider‑specific symbol id(s).
+- [ ] Target table identified or new ORM model added in database/models/raw_data.py (with uniqueness on [timestamp, token] or [timestamp, token, venue]). Migration created.
+- [ ] New client implemented in data_ingestion/api/, subclassing BaseAPIClient.
+- [ ] Historical fetch window logic implemented (pagination/range loop) per provider limits.
+- [ ] Normalization to dataset schema (timestamp ms, token, dataset fields, sorting).
+- [ ] Persistence via RawDataSQLEngine.save_data(df, table_name).
+- [ ] Unit tests for request building/parsing and normalization.
+- [ ] (Optional) Integration test for DB upsert against PostgreSQL.
+
+Notes
+- Upsert requires PostgreSQL; TimescaleDB hypertables are recommended for time‑series tables.
+- BaseAPIClient reads retry and breaker settings from config.API_CLIENT_SETTINGS. Adjust only if the provider requires different behavior.
+- Once data is saved, downstream components can consume it; add feature builders as needed to transform raw_* tables into model features.

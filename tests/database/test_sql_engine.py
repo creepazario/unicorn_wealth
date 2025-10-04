@@ -9,7 +9,7 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects.postgresql import Insert
 from unittest.mock import AsyncMock
 
-from unicorn_wealth.database.sql_engine import RawDataSQLEngine, FeatureStoreSQLEngine
+from database.sql_engine import RawDataSQLEngine, FeatureStoreSQLEngine
 
 
 @pytest.mark.asyncio

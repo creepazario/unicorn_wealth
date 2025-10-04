@@ -2,35 +2,15 @@ from __future__ import annotations
 
 from typing import Optional, Dict
 
-# Resolve logging defaults regardless of import style (package or flat)
-try:
-    from config import (
-        LOG_LEVEL as DEFAULT_LOG_LEVEL,
-        LOG_FILE_PATH as DEFAULT_LOG_FILE_PATH,
-        DB_POOL_SIZE as DEFAULT_DB_POOL_SIZE,
-        DB_MAX_OVERFLOW as DEFAULT_DB_MAX_OVERFLOW,
-        DB_POOL_RECYCLE_SECONDS as DEFAULT_DB_POOL_RECYCLE_SECONDS,
-        EXCHANGE_CONNECTION_SETTINGS as DEFAULT_EXCHANGE_CONNECTION_SETTINGS,
-    )  # type: ignore
-except Exception:  # pragma: no cover - fallback when importing with packages
-    try:
-        from . import config as _cfg  # type: ignore
-
-        DEFAULT_LOG_LEVEL = _cfg.LOG_LEVEL
-        DEFAULT_LOG_FILE_PATH = _cfg.LOG_FILE_PATH
-        DEFAULT_DB_POOL_SIZE = _cfg.DB_POOL_SIZE
-        DEFAULT_DB_MAX_OVERFLOW = _cfg.DB_MAX_OVERFLOW
-        DEFAULT_DB_POOL_RECYCLE_SECONDS = _cfg.DB_POOL_RECYCLE_SECONDS
-        DEFAULT_EXCHANGE_CONNECTION_SETTINGS = _cfg.EXCHANGE_CONNECTION_SETTINGS
-    except Exception:
-        from unicorn_wealth.config import (
-            LOG_LEVEL as DEFAULT_LOG_LEVEL,
-            LOG_FILE_PATH as DEFAULT_LOG_FILE_PATH,
-            DB_POOL_SIZE as DEFAULT_DB_POOL_SIZE,
-            DB_MAX_OVERFLOW as DEFAULT_DB_MAX_OVERFLOW,
-            DB_POOL_RECYCLE_SECONDS as DEFAULT_DB_POOL_RECYCLE_SECONDS,
-            EXCHANGE_CONNECTION_SETTINGS as DEFAULT_EXCHANGE_CONNECTION_SETTINGS,
-        )  # type: ignore
+# Resolve logging defaults using absolute project-root imports
+from config import (
+    LOG_LEVEL as DEFAULT_LOG_LEVEL,
+    LOG_FILE_PATH as DEFAULT_LOG_FILE_PATH,
+    DB_POOL_SIZE as DEFAULT_DB_POOL_SIZE,
+    DB_MAX_OVERFLOW as DEFAULT_DB_MAX_OVERFLOW,
+    DB_POOL_RECYCLE_SECONDS as DEFAULT_DB_POOL_RECYCLE_SECONDS,
+    EXCHANGE_CONNECTION_SETTINGS as DEFAULT_EXCHANGE_CONNECTION_SETTINGS,
+)
 
 # Pydantic v2 deprecated BaseSettings in core;
 # prefer v1-compat path if needed.
@@ -121,8 +101,8 @@ class Settings(BaseSettings):
     telegram_api_id: str
     telegram_api_hash: str
     telegram_bot_token: str
-    telegram_admin_channel_id: str
-    telegram_trade_channel_id: str
+    telegram_admin_channel_id: int
+    telegram_trade_channel_id: int
 
     # --- Exchange Enablement Map (from config.py) ---
     exchange_connection_settings: Dict[str, Dict[str, bool]] = (

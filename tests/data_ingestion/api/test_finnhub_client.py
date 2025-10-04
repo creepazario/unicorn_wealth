@@ -3,7 +3,7 @@ import asyncio
 import pandas as pd
 import pytest
 
-from unicorn_wealth.data_ingestion.api.finnhub_client import FinnhubClient
+from data_ingestion.api.finnhub_client import FinnhubClient
 
 
 @pytest.fixture(autouse=True)

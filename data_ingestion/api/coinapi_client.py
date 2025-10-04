@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Tuple
 import aiohttp
 import pandas as pd
 
-from .base_client import BaseAPIClient
+from data_ingestion.api.base_client import BaseAPIClient
 
 
 class CoinApiClient(BaseAPIClient):
@@ -33,9 +33,12 @@ class CoinApiClient(BaseAPIClient):
 
         if endpoint == "ohlcv":
             url = f"{self.BASE_URL}/ohlcv/{symbol_id}/history"
+            # Ensure we request the maximum allowed by CoinAPI to avoid pagination truncation
+            limit = int(kwargs.get("limit", 100000))
             params: Dict[str, Any] = {
                 "period_id": period_id,
                 "time_start": time_start,
+                "limit": limit,
             }
             if time_end:
                 params["time_end"] = time_end
@@ -44,11 +47,13 @@ class CoinApiClient(BaseAPIClient):
         # metrics
         metric_id = kwargs["metric_id"]
         url = f"{self.BASE_URL}/metrics/symbol/history"
+        limit = int(kwargs.get("limit", 100000))
         params = {
             "metric_id": metric_id,
             "symbol_id": symbol_id,
             "period_id": period_id,
             "time_start": time_start,
+            "limit": limit,
         }
         if time_end:
             params["time_end"] = time_end

@@ -3,9 +3,9 @@ from typing import Any, Dict, Tuple
 
 import pandas as pd
 import pytest
-from unicorn_wealth.config import API_CLIENT_SETTINGS
-from unicorn_wealth.data_ingestion.api.base_client import BaseAPIClient
-from unicorn_wealth import pybreaker as _pybreaker
+from config import API_CLIENT_SETTINGS
+from data_ingestion.api.base_client import BaseAPIClient
+import pybreaker as _pybreaker
 
 
 class _TestClient(BaseAPIClient):

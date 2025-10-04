@@ -4,7 +4,7 @@ from typing import Any, Dict
 import pandas as pd
 import pytest
 
-from unicorn_wealth.data_ingestion.api.coinapi_client import CoinApiClient
+from data_ingestion.api.coinapi_client import CoinApiClient
 
 
 @pytest.fixture(autouse=True)
@@ -85,7 +85,11 @@ async def test_request_formulation_ohlcv_and_parsing(mocker):
     _, call_args, _ = mocked.mock_calls[0]
     url, sent_params = call_args
     assert url == "https://rest.coinapi.io/v1/ohlcv/BINANCE_SPOT_BTC_USDT/history"
-    assert sent_params == {"period_id": "1DAY", "time_start": "2024-01-01T00:00:00Z"}
+    assert sent_params == {
+        "period_id": "1DAY",
+        "time_start": "2024-01-01T00:00:00Z",
+        "limit": 100000,
+    }
 
     # Parsing
     assert set(

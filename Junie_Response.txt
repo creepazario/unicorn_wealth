@@ -1,0 +1,135 @@
+Unicorn Wealth Audit — Implemented Features and Data Sources (as of 2025-10-04 03:22 local)
+
+Scope
+- Create a communication file (this file) and audit which features and data sources listed in specifications/Unicorn_Wealth_Feature_Set.json are implemented in the project. Explain how each is implemented and its current working functionality.
+
+Reference specification examined
+- Path: /home/ryan/unicorn_wealth/specifications/Unicorn_Wealth_Feature_Set.json
+- Core operations listed there (abbrev):
+  rsi_15m; atr_normalized_15m, atr_normalized_1h, atr_normalized_4h, atr_normalized_1d; adx_15m/1h/4h/1d (with adx_pos_*, adx_neg_*); temporal cyclicals (day_of_week_cos/sin, hour_of_day_cos/sin, minute_of_hour_cos/sin); session/kill-zone flags and counters (sess_ny_flag, sess_london_flag, sess_asia_flag, kz_ny_flag, kz_london_flag, friday_flag, bars_to_session_close, bars_to_kz_end, bars_since_session_open, bars_since_midnight_utc, bars_since_kz_start); external: economic_event.
+
+Summary of findings
+- All listed technical indicators and temporal features in the spec are implemented in code and integrated into the historical feature store pipeline. Economic event is implemented with a Finnhub calendar (or registry-provided calendar) and merged to the 15m base timeline as a boolean flag. Data sources for OHLCV come from the SQL raw tables (raw_ohlcv_15m/1h/4h/1d) for historical runs; live paths use a combination of WebSocket trades from CoinAPI and scheduled pulls (e.g., via YFinance), orchestrated by core/live_manager.py.
+
+Detailed audit
+1) Technical indicators
+
+1.a) rsi_15m
+- Implementation:
+  - File: features/technical/momentum.py
+  - Function: rsi_15m(ohlcv_df: pd.DataFrame, settings: Dict) -> pd.Series
+  - Uses ta.momentum.RSIIndicator on ohlcv_df['close'] with window from settings["15m"]["rsi_15m"]["window"].
+  - Names Series "rsi_15m".
+- Integration:
+  - Used by features/feature_engine.py in run_historical_pipeline(): computes rsi_15m on 15m OHLCV and includes it in the ML feature frame f15.
+  - FEATURE_PARAMS in config.py defines default windows per horizon.
+- Functionality:
+  - Unit tests: tests/features/technical/test_momentum.py covers calculation and settings path handling.
+  - Appears in output feature_store CSVs (output/training_data/feature_store_*.csv) and database schema handling.
+  - Status: Implemented and used in historical feature assembly; functioning.
+
+1.b) ATR normalized features (15m, 1h, 4h, 1d)
+- Implementation:
+  - File: features/technical/volatility.py
+  - Functions:
+    - atr_15m/1h/4h/1d compute Average True Range via ta.volatility.AverageTrueRange returning DataFrame with column 'average_true_range'.
+    - atr_normalized_15m/_1h/_4h/_1d compute normalized Series = ATR/(close+1e-9)*100 with specific Series names.
+- Integration:
+  - feature_engine.py computes ATR per timeframe and then atr_normalized per same timeframe.
+  - 15m normalized is included directly in f15; 1h/4h/1d normalized features are computed and then merged-asof onto the 15m base timeline.
+- Functionality:
+  - Unit tests: tests/features/technical/test_volatility.py includes tests for atr_normalized_* functions (shape, naming, calculation behavior).
+  - Present in output/training_data feature store CSV headers and in database SQL engine column lists.
+  - Status: Implemented and used; functioning.
+
+1.c) ADX features (adx_15m, adx_1h, adx_4h, adx_1d) including adx_pos_* and adx_neg_*
+- Implementation:
+  - File: features/technical/trend.py
+  - Functions: adx_15m/1h/4h/1d(ohlcv_df, settings) -> DataFrame with columns ['adx','adx_pos','adx_neg'] using ta.trend.ADXIndicator. Windows come from settings per timeframe.
+- Integration:
+  - feature_engine.py computes ADX for each timeframe; for 15m it includes adx_15m, adx_pos_15m, adx_neg_15m; for 1h/4h/1d the same columns are merged-asof to the 15m base timeline.
+- Functionality:
+  - Unit tests: tests/features/technical/test_trend.py covers settings resolution and computation.
+  - Included in database feature store models and sql_engine saving logic.
+  - Status: Implemented and used; functioning.
+
+2) Temporal cyclical features
+- Implementation:
+  - File: features/temporal/cyclical_time.py
+  - Functions: day_of_week_cos/sin, hour_of_day_cos/sin, minute_of_hour_cos/sin. They take a pandas Series of epoch-ms timestamps, convert to UTC datetimes, and apply sin/cos transforms with appropriate periods (7, 24, 60).
+- Integration:
+  - feature_engine.py builds a 15m base timeline (from raw_ohlcv_15m timestamps) and directly adds these six columns as float64.
+- Functionality:
+  - Included in wide feature frames before saving; present in database SQL saving routes.
+  - Status: Implemented and used; functioning.
+
+3) Session and kill-zone flags/counters
+- Implementation:
+  - File: features/temporal/sessions.py
+  - Function: compute_session_features(timestamps_ms: pd.Series, bar_minutes: int=15) -> pd.DataFrame
+  - Produces columns:
+    - Boolean flags: sess_asia_flag, sess_london_flag, sess_ny_flag, kz_london_flag, kz_ny_flag, friday_flag
+    - Counters (int64): bars_to_session_close, bars_to_kz_end, bars_since_session_open, bars_since_midnight_utc, bars_since_kz_start
+  - Rules (UTC) encoded within: session windows (Asia 23:00–07:00 wrap; London 07:00–15:00; NY 15:00–23:00) and kill-zones (London 07:00–09:00; NY 15:00–17:00). Inclusive boundary handling; counters clipped at >=0.
+- Integration:
+  - feature_engine.py: sess_df = compute_session_features(base15["timestamp"], 15). Boolean columns are cast to float64 for uniformity in the wide frame; counters are numeric.
+- Functionality:
+  - Tests present: tests/features/temporal/test_sessions.py and test_sessions_additional.py validate expected flags around boundary conditions.
+  - Status: Implemented and used; functioning.
+
+4) External feature: economic_event
+- Implementation:
+  - File: features/external/economic_event.py provides low-level helpers:
+    - economic_event_occurs_within_24h(events: list[dict], now)
+    - economic_event_flag(raw_calendar_df: pd.DataFrame, now) -> DataFrame with ["timestamp","economic_event"] for the current time row.
+  - Pipeline assembly (historical): features/feature_engine.py computes an economic_event boolean aligned to the 15m base timeline:
+    - It attempts to retrieve an in-memory calendar from the DataFrame registry under keys 'finnhub_econ_calendar_df' or 'economic_event_df' (live path).
+    - If not found (historical path), it attempts to fetch from Finnhub via data_ingestion/api/finnhub_client (API key loaded via core.config_loader.load_settings) for the date window of base15 timestamps. It chunks by months, concatenates, and normalizes.
+    - It normalizes timestamp column, filters strictly for 'high' impact (case-insensitive string match), then performs a merge_asof(nearest within 12h) to mark a boolean flag for each 15m bar whether a 'high' impact event is near.
+- Integration:
+  - feature_engine.py assigns base15["economic_event"] to the computed boolean Series (fallbacks to all False on failures).
+  - database/sql_engine.py and database/models/feature_stores.py preserve economic_event as boolean when saving/reading feature stores.
+- Functionality:
+  - Unit tests: tests/features/external/test_economic_event.py, test_economic_event_occurs.py, test_economic_event_numeric.py cover core behavior of flagging and 24h logic.
+  - Logging indicates previous warnings during live runs when feature was skipped if no calendar was available; the historical pipeline now includes robust fetching/merging logic.
+  - Status: Implemented and integrated; functioning, subject to data availability and API key configuration.
+
+5) Data sources and how they are used
+- Historical OHLCV (primary feature inputs):
+  - Source: SQL tables raw_ohlcv_15m, raw_ohlcv_1h, raw_ohlcv_4h, raw_ohlcv_1d.
+  - Loader: features/feature_engine.py run_historical_pipeline() executes parameterized SELECTs to fetch per-token data bounded by HISTORICAL_LOOKBACK_DAYS.
+  - Saving pipeline: FeatureStoreSQLStorageEngine (database/sql_engine.py) sanitizes and writes wide feature frames to feature_store_{horizon} tables. It preserves boolean dtype for economic_event.
+- Live market data:
+  - WebSocket: data_ingestion/websocket/coinapi_ws_client.py for streaming trades/quotes from CoinAPI, used by core/live_manager.py to assemble in-memory candles and resample to 15m/1h/etc. LiveDataManager also handles boundary completion and queuing.
+  - Scheduled pulls and reference data: data_ingestion/api/yfinance_client.py retrieves OHLCV for symbols like SPX, DXY, Gold as needed by LiveDataManager’s various _fetch_* methods.
+  - Additional APIs (not exhaustively audited here) exist in core/live_manager.py for Santiment and other metrics; these are ancillary to the specific feature set requested.
+- Configuration:
+  - config.py defines MASTER_TOKEN_LIST with mappings to external vendor slugs and coinapi symbol ids; FEATURE_PARAMS provides per-horizon windows for RSI/ATR/ADX and includes atr_normalized_15m toggles; HISTORICAL_LOOKBACK_DAYS controls historical window size.
+
+6) Where features are assembled and stored
+- Assembly: features/feature_engine.py UnifiedFeatureEngine.run_historical_pipeline() builds a 15m base timeline and merges 1h/4h/1d features via merge_asof with backward direction (forward-fill effect). It adds temporal cyclical features, session/kill-zone/counter features, and the external economic_event boolean.
+- Output: database/sql_engine.py FeatureStoreSQLStorageEngine.save_features() persists to feature_store_{1h|4h|8h}. Presence of columns is also visible in output/training_data/feature_store_*.csv.
+
+7) Current working functionality assessment
+- Technical features (RSI, ATR+normalized, ADX family): Implemented, unit-tested, and integrated into historical pipeline. Appear in output CSVs and DB layer. Considered functioning.
+- Temporal cyclical features: Implemented and added in the pipeline. Considered functioning.
+- Session flags and counters: Implemented with comprehensive rules; tests indicate expected behavior. Considered functioning.
+- Economic event: Implemented with robust historical-fetch fallback (Finnhub) and registry-based live integration. Unit tests exist for the helper functions; the pipeline integration depends on availability of calendar data and API key configuration. Considered functioning when data available; otherwise safely defaults to False.
+- Data sources: Historical data relies on pre-populated SQL raw_ohlcv_* tables; live streams rely on CoinAPI and scheduled API clients like YFinance.
+
+8) Notes on items not explicitly listed or previously skipped in logs
+- Earlier logs showed warnings like "Skipping unimplemented feature" for some temporal items. The current codebase contains working implementations for cyclical_time and sessions features and integrates them directly in run_historical_pipeline(). Any remaining skip warnings likely stem from older run paths or when data prerequisites were missing.
+
+Traceability (selected file refs)
+- specs: specifications/Unicorn_Wealth_Feature_Set.json
+- engine: features/feature_engine.py
+- technical: features/technical/momentum.py, features/technical/volatility.py, features/technical/trend.py
+- temporal: features/temporal/cyclical_time.py, features/temporal/sessions.py
+- external: features/external/economic_event.py
+- data ingestion: data_ingestion/websocket/coinapi_ws_client.py, data_ingestion/api/yfinance_client.py
+- DB persistence: database/sql_engine.py (FeatureStoreSQLStorageEngine)
+- config: config.py
+- tests: tests/features/technical/*, tests/features/temporal/*, tests/features/external/*, tests/data_processing/feature_engineering/test_unified_feature_engine.py
+
+Conclusion
+All features enumerated in the provided feature set file are present in the codebase and integrated into the historical feature pipeline, with unit tests covering core computations. Data sources are clearly defined: historical OHLCV via database tables, live via CoinAPI websocket and scheduled API clients (e.g., YFinance), and economic events via Finnhub calendar or in-memory registry. Functionality is in place; successful operation for economic_event specifically depends on the presence of calendar data/API keys.

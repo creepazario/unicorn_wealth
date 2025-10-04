@@ -28,8 +28,8 @@ def test_wfo_window_generation():
     )
 
     # Import here to ensure test isolation
-    import unicorn_wealth.config as config
-    from unicorn_wealth.ml_lifecycle.optimizer import StrategyOptimizer
+    import config as config
+    from ml_lifecycle.optimizer import StrategyOptimizer
 
     opt = StrategyOptimizer(dataset=df, config_module=config)
     windows = opt._generate_wfo_windows()
@@ -74,8 +74,8 @@ def test_objective_function_orchestration(mocker):
     )
 
     # Import optimizer module and monkeypatch mlflow inside it to avoid side effects
-    import unicorn_wealth.config as config
-    import unicorn_wealth.ml_lifecycle.optimizer as optimizer_mod
+    import config as config
+    import ml_lifecycle.optimizer as optimizer_mod
 
     optimizer_mod.mlflow = None  # disable MLflow in objective
 
@@ -107,7 +107,7 @@ def test_objective_function_orchestration(mocker):
     optimizer_mod.ModelValidator = ValidatorMockCls
 
     # Create optimizer and override its windows to exactly two custom windows
-    from unicorn_wealth.ml_lifecycle.optimizer import StrategyOptimizer, WFOWindow
+    from ml_lifecycle.optimizer import StrategyOptimizer, WFOWindow
 
     opt = StrategyOptimizer(
         dataset=df, config_module=config, horizons=("1h", "4h", "8h")

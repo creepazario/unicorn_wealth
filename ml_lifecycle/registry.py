@@ -13,7 +13,7 @@ Implementation assumptions based on ModelTrainer:
 
 from __future__ import annotations
 
-from typing import Dict, List, Mapping
+from typing import Dict, List, Mapping, Optional, Iterable
 
 import logging
 
@@ -37,8 +37,8 @@ __all__ = ["ModelRegistryManager"]
 logger = logging.getLogger(__name__)
 
 
-_HORIZONS: tuple[str, ...] = ("1h", "4h", "8h")
-_MODEL_NAMES: Mapping[str, str] = {
+_DEFAULT_HORIZONS: tuple[str, ...] = ("1h", "4h", "8h")
+_DEFAULT_MODEL_NAMES: Mapping[str, str] = {
     "1h": "uw-catboost-1h",
     "4h": "uw-catboost-4h",
     "8h": "uw-catboost-8h",
@@ -48,20 +48,31 @@ _MODEL_NAMES: Mapping[str, str] = {
 class ModelRegistryManager:
     """Handles registration and promotion of the CatBoost model ensemble in MLflow.
 
+    This manager supports a configurable set of horizons and model names. By
+    default, it works with ("1h","4h","8h"). For test runs, you can
+    instantiate with horizons=("15m",) and model_names={"15m": "uw-catboost-15m"}.
+
     Methods
     -------
     register_models(parent_run_id: str) -> Dict[str, int]
-        Register the three child-run models under unique names and return
+        Register the child-run models under their registry names and return
         a mapping of model name to the new version number.
 
     promote_challenger_ensemble(new_versions: Dict[str, int]) -> None
-        Promote the entire ensemble of new versions to Production atomically,
-        archiving any current Production versions first. If any step fails,
+        Promote the provided model versions to Production. If any step fails,
         the method attempts to roll back to the original state and raises.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        horizons: Optional[Iterable[str]] = None,
+        model_names: Optional[Mapping[str, str]] = None,
+    ) -> None:
         self.client = MlflowClient()
+        self.horizons = tuple(horizons) if horizons is not None else _DEFAULT_HORIZONS
+        self.model_names = (
+            dict(model_names) if model_names is not None else dict(_DEFAULT_MODEL_NAMES)
+        )
 
     # -------------------- Registration --------------------
     def register_models(self, parent_run_id: str) -> Dict[str, int]:
@@ -95,10 +106,11 @@ class ModelRegistryManager:
             run_name = r.data.tags.get("mlflow.runName") or ""
             if run_name.endswith("_model"):
                 horizon = run_name.replace("_model", "")
-                if horizon in _HORIZONS:
+                if horizon in self.horizons:
                     horizon_to_run_id[horizon] = r.info.run_id
 
-        missing = [h for h in _HORIZONS if h not in horizon_to_run_id]
+        # Only require child runs for configured horizons
+        missing = [h for h in self.horizons if h not in horizon_to_run_id]
         if missing:
             raise ValueError(
                 "Missing expected child runs for horizons: " + ", ".join(missing)
@@ -106,18 +118,44 @@ class ModelRegistryManager:
 
         # Register each child run's model artifact under its registry name
         name_to_version: Dict[str, int] = {}
-        for horizon in _HORIZONS:
+        for horizon in self.horizons:
             child_run_id = horizon_to_run_id[horizon]
-            artifact_uri = f"runs:/{child_run_id}/model"
-            model_name = _MODEL_NAMES[horizon]
+            model_name = self.model_names[horizon]
 
+            # Skip horizons explicitly marked as skipped by the trainer
+            try:
+                child_run = self.client.get_run(child_run_id)
+                skipped_flag = str(
+                    child_run.data.params.get("skipped_empty_data", "")
+                ).lower()
+                if skipped_flag in {"true", "1", "yes"}:
+                    logger.info(
+                        "Skipping registration for horizon=%s (no training data; run_id=%s)",
+                        horizon,
+                        child_run_id,
+                    )
+                    continue
+            except Exception:  # pragma: no cover - defensive
+                pass
+
+            # Default artifact path used by trainer
+            artifact_uri = f"runs:/{child_run_id}/model"
             logger.info(
                 "Registering model for horizon=%s as name=%s from artifact_uri=%s",
                 horizon,
                 model_name,
                 artifact_uri,
             )
-            mv = mlflow.register_model(model_uri=artifact_uri, name=model_name)
+            try:
+                mv = mlflow.register_model(model_uri=artifact_uri, name=model_name)
+            except Exception as e:
+                logger.warning(
+                    "Registration skipped for horizon=%s (no logged model at %s): %s",
+                    horizon,
+                    artifact_uri,
+                    e,
+                )
+                continue
 
             # mlflow.entities.model_registry.ModelVersion.version is typically str-like
             try:
@@ -127,17 +165,19 @@ class ModelRegistryManager:
 
             name_to_version[model_name] = version_int
 
+        if not name_to_version:
+            raise ValueError(
+                "No models were registered; all horizons appear to have been skipped or lacked logged artifacts."
+            )
         return name_to_version
 
     # -------------------- Promotion --------------------
     def promote_challenger_ensemble(self, new_versions: Dict[str, int]) -> None:
-        """Promote the three model versions to Production atomically.
+        """Promote the provided model versions by updating the 'production' alias atomically.
 
-        The method will:
-        1) Identify current Production versions for each model and archive them.
-        2) Transition all new versions from Staging to Production.
-        If any step fails for any model, attempt to roll back all transitions
-        so that the ensemble behaves as all-or-nothing.
+        This avoids deprecated stage transitions (and their known YAML serialization issues
+        in certain MLflow file store versions) by using model aliases. If any step fails,
+        the method attempts to roll back aliases to their previous versions and raises.
 
         Parameters
         ----------
@@ -145,83 +185,76 @@ class ModelRegistryManager:
             Mapping from model name (e.g., "uw-catboost-1h") to new version
             numbers returned by `register_models`.
         """
-        required_names = list(_MODEL_NAMES.values())
-        # Validate presence of all three models
-        for name in required_names:
-            if name not in new_versions:
-                raise ValueError(f"new_versions is missing required model name: {name}")
+        # Validate that provided versions correspond to configured model names
+        # Preserve deterministic order aligned with self.horizons
+        required_names = [self.model_names[h] for h in self.horizons]
+        provided_names = set(new_versions.keys())
+        missing = set(required_names) - provided_names
+        if missing:
+            raise ValueError(
+                "new_versions is missing required model name(s): "
+                + ", ".join(sorted(missing))
+            )
 
-        # Pre-validate that the target new versions exist (and capture their stages)
+        # Pre-validate that the target new versions exist
         for name in required_names:
             ver = new_versions[name]
             _ = self.client.get_model_version(name=name, version=str(ver))
 
-        # Collect current production versions for potential rollback
-        current_prod: Dict[str, List[mlflow.entities.model_registry.ModelVersion]] = {}
-        for name in required_names:
-            prod = self.client.get_latest_versions(name=name, stages=["Production"])  # type: ignore[arg-type]
-            current_prod[name] = list(prod or [])
+        alias = "production"
 
-        archived: List[tuple[str, str]] = []  # list of (name, version) archived
-        promoted: List[tuple[str, str]] = []  # list of (name, version) promoted
+        # Capture current alias mapping for rollback
+        previous_alias_versions: Dict[str, Optional[str]] = {}
+        for name in required_names:
+            try:
+                reg = self.client.get_registered_model(name)
+                prev = reg.aliases.get(alias)
+            except Exception:
+                prev = None
+            previous_alias_versions[name] = prev
+
+        updated: List[tuple[str, str]] = []  # list of (name, version) applied
 
         try:
-            # Phase 1: archive current production versions (if any)
-            for name in required_names:
-                for mv in current_prod[name]:
-                    self.client.transition_model_version_stage(
-                        name=name,
-                        version=mv.version,
-                        stage="Archived",
-                    )
-                    archived.append((name, mv.version))
-
-            # Phase 2: promote all new versions
-            for name in required_names:
-                version = str(new_versions[name])
-                self.client.transition_model_version_stage(
-                    name=name,
-                    version=version,
-                    stage="Production",
-                    archive_existing_versions=False,
+            for model_name in required_names:
+                new_version_number = str(new_versions[model_name])
+                logger.info(
+                    "Setting alias '%s' for %s to version=%s",
+                    alias,
+                    model_name,
+                    new_version_number,
                 )
-                promoted.append((name, version))
-
+                self.client.set_registered_model_alias(
+                    name=model_name, alias=alias, version=new_version_number
+                )
+                updated.append((model_name, new_version_number))
         except Exception as e:
-            logger.exception("Ensemble promotion failed. Attempting rollback: %s", e)
-            # Rollback any partial promotions: demote newly promoted back to Staging
-            for name, version in reversed(promoted):
+            logger.exception(
+                "Ensemble promotion (alias update) failed. Attempting rollback: %s", e
+            )
+            # Roll back aliases to previous versions
+            for name, _ver in reversed(updated):
+                prev = previous_alias_versions.get(name)
                 try:
-                    self.client.transition_model_version_stage(
-                        name=name,
-                        version=version,
-                        stage="Staging",
-                    )
+                    if prev is None:
+                        # Remove alias if it didn't exist previously
+                        self.client.delete_registered_model_alias(
+                            name=name, alias=alias
+                        )
+                    else:
+                        self.client.set_registered_model_alias(
+                            name=name, alias=alias, version=str(prev)
+                        )
                 except Exception:  # pragma: no cover - best-effort rollback
                     logger.exception(
-                        "Rollback warning: failed to revert %s v%s to Staging",
+                        "Rollback warning: failed to restore alias '%s' for %s to %s",
+                        alias,
                         name,
-                        version,
+                        prev,
                     )
-
-            # Restore archived Production versions
-            for name, version in reversed(archived):
-                try:
-                    self.client.transition_model_version_stage(
-                        name=name,
-                        version=version,
-                        stage="Production",
-                    )
-                except Exception:  # pragma: no cover - best-effort rollback
-                    logger.exception(
-                        "Rollback warning: failed to restore Production for %s v%s",
-                        name,
-                        version,
-                    )
-
-            # Re-raise to make the failure visible to the caller
             raise
 
         logger.info(
-            "Successfully promoted challenger ensemble to Production: %s", new_versions
+            "Successfully promoted challenger ensemble by alias to Production: %s",
+            new_versions,
         )

@@ -4,3 +4,9 @@ __pycache__/
 
 # Environment
 .env
+
+# Ignore Large Model Files
+mlruns/
+
+# Ignore generated output data files
+output/

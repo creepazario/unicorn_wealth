@@ -110,6 +110,14 @@ class CoinMarketCapClient(BaseAPIClient):
                     usd = quote.get("USD") if isinstance(quote, dict) else None
                     price = usd.get("price") if isinstance(usd, dict) else None
                     row = {"timestamp": ts, "key": key, "price_usd": price}
+                    # include auxiliary fields when present (e.g., circulating_supply)
+                    for aux_field in (
+                        "circulating_supply",
+                        "market_cap",
+                        "total_supply",
+                    ):
+                        if aux_field in item:
+                            row[aux_field] = item.get(aux_field)
                     rows.append(row)
 
         # Shape B: global metrics/fear & greed often return list under data

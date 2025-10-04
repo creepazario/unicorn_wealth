@@ -1,0 +1,122 @@
+AI Implementation Prompt: Unicorn Wealth Feature Engineering Framework
+
+Role: You are an autonomous senior Python engineer implementing features defined in specifications/unicorn_wealth_feature_set.json into the Unicorn Wealth codebase. You must not load or parse the JSON at runtime; instead, you will hardcode functions and pipelines following the rules in specifications/unicorn_wealth_feature_reference.md. All code must be black-formatted and flake8-clean, and include unit tests.
+
+Primary Objective: Given a single JSON feature definition (the operator), implement its logic, wire it into the hardcoded pipelines, and ensure its values are saved to all feature store tables (feature_store_1h, feature_store_4h, feature_store_8h) on the 15m base timeline per the reference guide.
+
+Inputs You Will Use
+- operator: The JSON feature entry’s operation field name (e.g., "adx_1h"). This is the canonical function and column name.
+- unicorn_wealth_feature_set.json: Use only as a blueprint while coding. Do not enable runtime reading.
+- specifications/unicorn_wealth_feature_reference.md: Authoritative rules and mapping from JSON keys to code behavior.
+
+Mandatory Rules (from the Feature Reference Guide)
+1) Function naming and placement
+- Name the function exactly operator (operation) from JSON.
+- Place the function into the appropriate module, matching its domain:
+  - Momentum indicators: features/technical/momentum.py
+  - Trend indicators (e.g., ADX): features/technical/trend.py
+  - Volatility indicators (e.g., ATR): features/technical/volatility.py
+- Export from __all__ in that module.
+
+2) Function signature and inputs
+- Inspect transform_data_source to determine the inputs. Use DataFrame names without {t}_ prefix. Example:
+  - transform_data_source: "{t}_atr_1h_df {t}_ohlcv_1h_df" => def my_feature(atr_1h_df: pd.DataFrame, ohlcv_1h_df: pd.DataFrame) -> pd.Series
+  - transform_data_source: "{t}_ohlcv_15m_df" => def my_feature(ohlcv_15m_df: pd.DataFrame, settings: Dict) -> pd.Series or DataFrame depending on the transform.
+- If the feature depends on a window/parameter, read from settings path exactly as other functions do (see existing ATR/ADX functions), e.g. settings["1h"]["adx_1h"]["window"]. Implement a small helper to extract the window consistently if needed.
+
+3) Implement transform logic exactly
+- Implement the transform as written in the JSON transform field, translating {t} placeholders and DataFrame names to function parameters.
+- Preserve unit and dtype (output_data_type) by casting result to the specific pandas/numpy dtype (e.g., float64) before returning.
+- Ensure NaN handling per nan_handing (e.g., forward_fill). If specified, apply the imputation to the final series/dataframe.
+- Name the output series/columns exactly as the operator. For multi-column outputs (e.g., ADX), follow the project’s convention (adx, adx_pos, adx_neg) that matches existing tests and usage.
+
+4) DataFrameRegistry integration (if required by df_frame_store)
+- If df_frame_store is TRUE, store the resulting DataFrame in the registry with:
+  - df_variable_id as the key
+  - df_storage_period as storage_period
+  - df_update_mode as update_mode
+  - df_keys define the columns (ensure timestamp is present if required)
+- Keep these registry keys consistent; they serve as intermediate sources for downstream features.
+
+5) UnifiedFeatureEngine integration (hardcoded pipelines)
+- The engine is features/feature_engine.py.
+- Implement your feature call in the correct execution pass based on live_cadence and step_order:
+  - For historical export: engine.run_historical_pipeline performs three passes for horizons ["1h", "4h", "8h"].
+  - All features that are is_ml_training_feature=true must ultimately be saved to ALL three feature stores, using 15m rows as the base timeline, regardless of their source timeframe (see reference guide note: table names reflect model horizon, but rows are 15m).
+- Where to compute:
+  - 15m-sourced indicators: compute from raw["15m"] with the horizon-specific FEATURE_PARAMS (from config.py) for that pass.
+  - 1h/4h/1d-sourced indicators: compute from their respective raw timeframes.
+- After computing per-timeframe frames, align them onto the 15m base timeline using merge_asof with direction="backward" and forward-fill across 15m rows.
+- Ensure step_order: insert your function calls relative to their dependencies (e.g., compute base ATR before atr_normalized_*). Do not reorder existing dependencies.
+
+6) Persistence to feature stores (critical)
+- Only is_ml_training_feature=true features are included in the final wide DataFrame for saving.
+- The column name in the output DataFrame must exactly match the operator (operation) from the JSON (or the project’s established naming for multi-output features).
+- The storage path:
+  - UnifiedFeatureEngine assembles a wide DataFrame with columns [timestamp, token, <training features>].
+  - database/sql_engine.FeatureStoreSQLStorageEngine._sanitize_features whitelists training columns and casts them to the correct types before saving.
+  - database/sql_engine.FeatureStoreSQLEngine.save_data writes to the horizon-specific table (feature_store_1h, feature_store_4h, feature_store_8h). All these tables store 15m rows.
+- Required tasks when adding a new training feature:
+  1) Add the column to the final wide DataFrame in run_historical_pipeline.
+  2) Whitelist the column name in FeatureStoreSQLStorageEngine._sanitize_features.
+  3) Ensure database/models/feature_stores.py includes the feature in _static_training_features (operation name and float64 unless otherwise specified). This future-proofs ORM-created tables. The runtime will also auto-add missing columns via ALTER TABLE if needed.
+
+7) Unit tests
+- Add tests under tests/features/... mirroring existing patterns for ATR/ADX.
+- For transform correctness: build small synthetic DataFrames to assert exact results.
+- For engine integration: add/extend tests that mock your function and assert its values appear in the final DataFrame from the pipeline.
+
+8) Data types and naming
+- Cast outputs to the output_data_type from JSON (e.g., float64). The DB layer expects float64 for numeric features.
+- Name the Series or DataFrame columns precisely as the operator. For derived features like atr_normalized_1h, the returned Series must have name "atr_normalized_1h".
+
+9) Error handling
+- Respect on_error and max_retries by wrapping engine calls appropriately if required. Follow existing engine patterns for retries/skip/halt.
+
+10) Performance and SQL considerations
+- The SQL layer chunks feature writes (currently 500 rows) to avoid oversized statements.
+- Ensure no NaN/inf leaks into the DB: the sanitizer drops rows with any NaN in feature columns. Handle NaNs upstream per nan_handing to maximize retention.
+
+11) Formatting, linting, and CI
+- Run black -q . and flake8 to ensure the codebase remains clean and production-ready.
+- Run pytest -q and ensure all tests pass.
+
+Deliverable Checklist (execute in order for each operator)
+1) Implement function:
+   - Name matches operator, placed in correct module, exported in __all__.
+   - Signature matches transform_data_source; settings lookup aligned to timeframe.
+   - Transform logic implemented exactly; dtype cast applied; nan_handing applied.
+   - Output name equals operator (or established multi-column names).
+2) Wire into UnifiedFeatureEngine:
+   - Compute within run_historical_pipeline in step_order position relative to dependencies in 15m/1h/4h/1d sections.
+   - Include the output column(s) in the assembled per-timeframe frames.
+   - Merge onto 15m base timeline using backward-asof; include in final wide DataFrame.
+3) Ensure saving to feature store tables:
+   - Add columns to FeatureStoreSQLStorageEngine._sanitize_features whitelist.
+   - Add the feature into database/models/feature_stores._static_training_features.
+   - Confirm final wide DataFrame includes the columns and is saved for horizons 1h, 4h, 8h.
+4) Tests:
+   - Add unit tests for the function and any integration tests needed.
+5) Quality gates:
+   - black, flake8, pytest all pass.
+
+Reference Patterns
+- See ATR and atr_normalized_* in features/technical/volatility.py for function structure, naming, dtype, and NaN robustness.
+- See ADX functions in features/technical/trend.py for multi-column outputs and engine wiring.
+- See features/feature_engine.py for historical pipeline alignment to 15m base and saving.
+- See database/sql_engine.py FeatureStoreSQLStorageEngine._sanitize_features for whitelist management.
+- See database/models/feature_stores.py for ORM-side feature column declaration.
+
+Notes and Pitfalls to Avoid
+- Do not read JSON at runtime; hardcode logic and wiring.
+- Always add new training feature columns to both the sanitizer whitelist and the ORM static list.
+- Ensure the output series or DataFrame column names exactly match the operator (or established multi-output naming). Mismatches lead to silently dropped columns during sanitization.
+- Honor FEATURE_PARAMS from config.py per horizon when computing indicators in historical runs.
+- All rows saved to feature_store_1h/4h/8h are 15m base rows; higher timeframe features must be asof-merged to 15m.
+
+When you finish, provide a concise summary of:
+- Implemented operator(s), source files, and functions
+- Engine wiring points and step_order relative placement
+- DB sanitization/ORM updates
+- Tests added and their coverage
+- Confirmation that black, flake8, and pytest passed

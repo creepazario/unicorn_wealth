@@ -1,8 +1,8 @@
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from unicorn_wealth.database.models.base import get_async_engine
-from unicorn_wealth.core.config_loader import Settings
+from database.models.base import get_async_engine
+from core.config_loader import Settings
 
 _ = pytest  # mark as used to satisfy flake8
 
@@ -27,8 +27,8 @@ def _dummy_settings(**overrides):
         "telegram_api_id": "x",
         "telegram_api_hash": "x",
         "telegram_bot_token": "x",
-        "telegram_admin_channel_id": "x",
-        "telegram_trade_channel_id": "x",
+        "telegram_admin_channel_id": -1001234567890,
+        "telegram_trade_channel_id": -1009876543210,
         # binance
         "binance_unicorn_api_key": "x",
         "binance_unicorn_api_secret": "x",
@@ -91,7 +91,7 @@ def test_get_async_engine_applies_pool_settings(monkeypatch):
 
     # Patch the symbol used by get_async_engine
     monkeypatch.setattr(
-        "unicorn_wealth.database.models.base.create_async_engine",
+        "database.models.base.create_async_engine",
         fake_create_async_engine,
     )
 

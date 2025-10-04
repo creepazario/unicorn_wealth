@@ -9,10 +9,8 @@ from typing import Any, Dict, Tuple
 import aiohttp
 import pandas as pd
 
-try:
-    import pybreaker  # type: ignore
-except Exception:  # pragma: no cover - local shim fallback
-    from unicorn_wealth import pybreaker  # type: ignore
+import pybreaker
+
 try:
     from tenacity import (
         retry,
@@ -35,15 +33,7 @@ except Exception:  # pragma: no cover - minimal stubs for test env without tenac
 
 
 # Load retry/circuit breaker settings from config
-try:  # flat import style
-    from config import API_CLIENT_SETTINGS  # type: ignore
-except Exception:  # pragma: no cover - package import fallback
-    try:
-        from .. import config as _cfg  # type: ignore
-
-        API_CLIENT_SETTINGS = _cfg.API_CLIENT_SETTINGS  # type: ignore
-    except Exception:
-        from unicorn_wealth.config import API_CLIENT_SETTINGS  # type: ignore
+from config import API_CLIENT_SETTINGS
 
 
 LOGGER = logging.getLogger(__name__)

@@ -1,6 +1,6 @@
 from sqlalchemy import PrimaryKeyConstraint
 
-from unicorn_wealth.database.models.operational import (
+from database.models.operational import (
     CurrentPositions,
     TradeLogs,
     TradeSignals,

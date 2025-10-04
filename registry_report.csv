@@ -1,0 +1,17 @@
+DataFrame: btc_active_addresses_24h_df,,Shape:,"(6, 2)"
+Columns ->,timestamp,active_addresses_24h
+Head 1 ->,2025-09-10 00:00:00+00:00,699562.0
+Head 2 ->,2025-09-11 00:00:00+00:00,695002.0
+Head 3 ->,2025-09-12 00:00:00+00:00,718433.0
+
+DataFrame: btc_yfinance_1d_df,,Shape:,"(5, 7)"
+Columns ->,"('timestamp', '')","('Adj Close', 'BTC-USD')","('Close', 'BTC-USD')","('High', 'BTC-USD')","('Low', 'BTC-USD')","('Open', 'BTC-USD')","('Volume', 'BTC-USD')"
+Head 1 ->,2025-09-10 00:00:00+00:00,113955.359375,113955.359375,114275.25,110940.078125,111531.25,56377473784
+Head 2 ->,2025-09-11 00:00:00+00:00,115507.5390625,115507.5390625,115522.546875,113453.8359375,113961.4296875,45685065332
+Head 3 ->,2025-09-12 00:00:00+00:00,116101.578125,116101.578125,116769.3828125,114794.484375,115507.7890625,54785725894
+
+DataFrame: finnhub_econ_calendar_df,,Shape:,"(515, 8)"
+Columns ->,actual,country,estimate,event,impact,prev,timestamp,unit
+Head 1 ->,nan,IR,nan,Milad-Un-Nabi,low,nan,2025-09-10 00:00:00+00:00,
+Head 2 ->,13.0,JP,nan,Reuters Tankan Index,low,9.0,2025-09-10 00:00:00+00:00,
+Head 3 ->,nan,CN,nan,Standing Committee National People's Congress,low,nan,2025-09-10 00:00:00+00:00,

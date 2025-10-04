@@ -1,6 +1,6 @@
 import pytest
 
-from unicorn_wealth.core.exceptions import (
+from core.exceptions import (
     UnicornWealthError,
     APIError,
     WebSocketError,

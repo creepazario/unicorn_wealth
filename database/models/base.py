@@ -16,10 +16,7 @@ try:  # Prefer async-compatible pool when available
 except Exception:  # pragma: no cover - fallback name in some versions
     _AsyncQueuePool = None  # type: ignore
 
-try:
-    from core.config_loader import Settings  # type: ignore
-except Exception:  # pragma: no cover - fallback when importing as a package
-    from unicorn_wealth.core.config_loader import Settings  # type: ignore
+from core.config_loader import Settings
 
 
 class Base(DeclarativeBase):

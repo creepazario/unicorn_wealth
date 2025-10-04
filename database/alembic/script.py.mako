@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from alembic import op
 import sqlalchemy as sa
-${imports if imports}
+% if imports:
+${imports}
+% endif
 
 # revision identifiers, used by Alembic.
 revision = ${repr(up_revision)}

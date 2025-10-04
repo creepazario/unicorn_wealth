@@ -4,7 +4,7 @@ from typing import Any, Dict
 import pandas as pd
 import pytest
 
-from unicorn_wealth.data_ingestion.api.coinmarketcap_client import CoinMarketCapClient
+from data_ingestion.api.coinmarketcap_client import CoinMarketCapClient
 
 
 @pytest.fixture(autouse=True)

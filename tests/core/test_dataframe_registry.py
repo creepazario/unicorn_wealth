@@ -4,7 +4,7 @@ from typing import List
 import pandas as pd
 import pytest
 
-from unicorn_wealth.core.dataframe_registry import DataFrameRegistry
+from core.dataframe_registry import DataFrameRegistry
 
 
 @pytest.fixture()

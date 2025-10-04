@@ -1,0 +1,1717 @@
+***IMPORTANT NOTE: THIS PYTHON FILE IS NOT FOR DIRECT USE WITHIN THE PROJECT. THIS FILE IS TO BE USED AS A TEMPLATE/GUIDLEINES DOCUMENT FOR HOW SMC & SESSIONS NEED TO BE IMPLEMENTED WITHIN THE PROJECT ONLY***
+
+"""
+Smart Money Concepts (SMC) — core calculations module
+✓ Swing-High / Swing-Low detector that matches LuxAlgo’s Smart-Money-Concepts
+  logic **exactly** and **without look-ahead bias**.
+"""
+
+from __future__ import annotations
+
+import uuid
+from dataclasses import dataclass
+from typing import List, Literal, Optional, Dict, Any, Tuple, Union
+import numpy as np
+import pandas as pd
+import config
+
+# ── default parameters ───────────────────────────────────────────────────────
+DEFAULT_SWING_LENGTH = 20      # LuxAlgo default (must stay ≥ 10)
+DEFAULT_ORDER_BLOCK_MITIGATION = "High/Low" # As per instructions
+DEFAULT_ORDER_BLOCK_FILTER = "ATR" # As per instructions
+
+# ── timeframe-specific swing settings ────────────────────────────────────────
+SWING_LENGTH_INTERNAL = 10
+SWING_LENGTH_BY_TIMEFRAME = config.SWING_LENGTH_BY_TIMEFRAME
+# ── session & kill-zone definitions (UTC) ──────────────────────────────────
+ASIA_SESSION_START_HOUR_UTC    = 23 # 23:00 UTC
+ASIA_SESSION_END_HOUR_UTC      = 7  # 07:00 UTC (next day)
+LONDON_SESSION_START_HOUR_UTC  = 7  # 07:00 UTC
+LONDON_SESSION_END_HOUR_UTC    = 15 # 15:00 UTC
+NY_SESSION_START_HOUR_UTC      = 15 # 15:00 UTC
+NY_SESSION_END_HOUR_UTC        = 23 # 23:00 UTC
+
+LONDON_KILL_ZONE_START_HOUR_UTC = 6 # 06:00 UTC
+LONDON_KILL_ZONE_END_HOUR_UTC   = 8 # 08:00 UTC
+NY_KILL_ZONE_START_HOUR_UTC     = 12 # 12:00 UTC
+NY_KILL_ZONE_END_HOUR_UTC       = 14 # 14:00 UTC
+# ── typed aliases ────────────────────────────────────────────────────────────
+SwingType  = Literal["high", "low"]
+StrongType = Literal["strong_high", "strong_low"]     # placeholder for later
+
+
+# ── data class ───────────────────────────────────────────────────────────────
+@dataclass
+class SwingPoint:
+    """
+    A confirmed swing pivot: either a swing-HIGH or swing-LOW.
+    """
+
+    smc_swing_id: str
+    smc_swing_type: SwingType
+    smc_swing_strong: Optional[StrongType]
+    smc_swing_interval: str        # e.g. “60m”
+    smc_swing_pivot_time: pd.Timestamp
+    smc_swing_level: float
+    smc_swing_confirmation_time: pd.Timestamp
+
+    @staticmethod
+    def new_id() -> str:
+        return f"SWING-{uuid.uuid4().hex[:8]}"
+# ── pivot-candidate (unconfirmed swing) ──────────────────────────────────────
+@dataclass
+class PivotCandidate:
+    """
+    The most-recent price point that *might* still turn into a confirmed
+    swing-HIGH or swing-LOW once another <length> candles print.
+    Uses **only** data that already exists → zero look-ahead bias.
+    """
+    smc_last_pivot_candidate_time:  pd.Timestamp
+    smc_last_pivot_candidate_level: float
+    smc_last_pivot_candidate_type:  SwingType      # "high"  |  "low"
+
+# ── structure-event container ────────────────────────────────────────────────
+StructureEventType      = Literal["BOS", "CHOCH"]
+StructureEventDirection = Literal["bullish", "bearish"]
+
+
+@dataclass
+class StructureEvent:
+    """
+    Market-structure event (Break-Of-Structure or Change-Of-Character).
+
+    All timestamps are UTC ISO; the “created” time is added at the moment the
+    event object is instantiated.
+    """
+
+    smc_event_id: str                       # unique ID, prefix “EVENT-”
+    smc_event_created: pd.Timestamp         # when this object was created
+    smc_event_type: StructureEventType      # "BOS" or "CHOCH"
+    smc_event_direction: StructureEventDirection   # "bullish" / "bearish"
+    smc_event_interval: str                 # e.g. "60m"
+    smc_event_price: float                  # price level that was broken
+    smc_event_break_time: pd.Timestamp      # candle close that broke structure
+    smc_event_swing_point: pd.Timestamp     # pivot time of the source swing
+
+    # --------------------------------------------------------------------- #
+    @staticmethod
+    def new_id() -> str:
+        return f"EVENT-{uuid.uuid4().hex[:8]}"
+
+    @classmethod
+    def create(
+            cls,
+            event_type: StructureEventType,
+            direction: StructureEventDirection,
+            interval: str,
+            price: float,
+            break_time: pd.Timestamp,
+            swing_time: pd.Timestamp,
+    ) -> "StructureEvent":
+        return cls(
+            smc_event_id=cls.new_id(),
+            # CHANGE THIS LINE:
+            smc_event_created=break_time,  # Changed from pd.Timestamp.utcnow() to break_time
+            smc_event_type=event_type,
+            smc_event_direction=direction,
+            smc_event_interval=interval,
+            smc_event_price=price,
+            smc_event_break_time=break_time,
+            smc_event_swing_point=swing_time,
+        )
+
+# ── swing-detector (LuxAlgo-accurate) ────────────────────────────────────────
+def detect_swing_points(
+    df: pd.DataFrame,
+    length: int = DEFAULT_SWING_LENGTH,
+    interval: str | None = None,
+) -> List[SwingPoint]:
+    """
+    Return LuxAlgo-style swing highs & lows.  A candidate at index *p* becomes
+    a confirmed pivot **length bars later** (*i = p + length*) when:
+
+    • **Bearish-leg start → swing-HIGH**
+         high[p] ≥ all future highs **and** at least one future high is lower.
+
+    • **Bullish-leg start → swing-LOW**
+         low[p] ≤ all future lows **and** at least one future low is higher.
+
+    A pivot is emitted:
+    • for the very first detected leg, and
+    • whenever the leg flips (bearish ⇄ bullish).
+
+    This mirrors LuxAlgo’s `getCurrentStructure()` behaviour and maintains
+    strict `length`-bar confirmation, so **no look-ahead bias** is introduced.
+    """
+    if length < 10:
+        raise ValueError("length must be ≥ 10 (LuxAlgo spec).")
+
+    interval = interval or "unknown"
+    swings: List[SwingPoint] = []
+
+    # Handle both uppercase and lowercase column names
+    if "high" in df.columns:
+        highs = df["high"].values
+    elif "High" in df.columns:
+        highs = df["High"].values
+    else:
+        raise KeyError("Neither 'high' nor 'High' column found in DataFrame")
+
+    if "low" in df.columns:
+        lows = df["low"].values
+    elif "Low" in df.columns:
+        lows = df["Low"].values
+    else:
+        raise KeyError("Neither 'low' nor 'Low' column found in DataFrame")
+    times = df.index                              # DateTimeIndex
+
+    BEARISH, BULLISH = 0, 1
+    prev_leg: Optional[int] = None
+
+    for i in range(length, len(df)):
+        p = i - length                            # candidate pivot index
+
+        # future-window slices (size == length)
+        rh = highs[p + 1 : i + 1]
+        rl = lows[p + 1 : i + 1]
+
+        # ── does the candidate start a new leg? ────────────────────────────
+        # bear-leg if pivot high is ≥ every future high AND strictly greater
+        # than at least one of them (allows ties but not a flat plateau)
+        is_new_bear = (highs[p] >= rh.max()) and (highs[p] > rh.min())
+
+        # bull-leg if pivot low is ≤ every future low AND strictly lower
+        # than at least one of them
+        is_new_bull = (lows[p] <= rl.min()) and (lows[p] < rl.max())
+
+        cur_leg = prev_leg
+        if is_new_bear and not is_new_bull:
+            cur_leg = BEARISH
+        elif is_new_bull and not is_new_bear:
+            cur_leg = BULLISH
+        else:
+            # either no leg change or an exact plateau — skip
+            prev_leg = cur_leg
+            continue
+
+        # ── emit a pivot ───────────────────────────────────────────────────
+        def add_pivot(ptype: SwingType, level: float) -> None:
+            swings.append(
+                SwingPoint(
+                    smc_swing_id=SwingPoint.new_id(),
+                    smc_swing_type=ptype,
+                    smc_swing_strong=None,
+                    smc_swing_interval=interval,
+                    smc_swing_pivot_time=times[p],
+                    smc_swing_level=level,
+                    smc_swing_confirmation_time=times[i],
+                )
+            )
+
+        if prev_leg is None:
+            # very first detected leg
+            if cur_leg == BULLISH:
+                add_pivot("low", float(lows[p]))
+            else:  # cur_leg == BEARISH
+                add_pivot("high", float(highs[p]))
+        elif cur_leg != prev_leg:
+            # subsequent flips alternate pivots
+            if cur_leg == BULLISH:
+                add_pivot("low", float(lows[p]))
+            else:  # cur_leg == BEARISH
+                add_pivot("high", float(highs[p]))
+
+        prev_leg = cur_leg
+
+    return swings
+def get_last_pivot_candidate(
+    df: pd.DataFrame,
+    length: int = DEFAULT_SWING_LENGTH,
+    interval: str | None = None,
+) -> Optional[PivotCandidate]:
+    """
+    Return the latest *pivot-candidate* — the bar that **could** become the
+    next confirmed swing pivot.
+    • Relies only on candles already printed (no future data).
+    • Works on any interval; `interval` is kept merely for symmetry with the
+      other public helpers.
+
+    Logic
+    -----
+    1.  Fetch the existing confirmed swings to see what the **current leg**
+        is doing (bullish ⇄ bearish).
+    2.  Within the **last <length> candles** pick the extreme in the *opposite*
+        direction of that leg:
+            bearish leg → look for a candidate *LOW*
+            bullish leg → look for a candidate *HIGH*
+    3.  Package the result in a `PivotCandidate`.
+    """
+    if df.empty:
+        return None
+
+    # 1) what was the last confirmed swing?
+    swings = detect_swing_points(df, length=length, interval=interval)
+    if not swings:
+        return None                     # nothing confirmed yet
+
+    last_pivot = swings[-1]
+    current_leg = "bearish" if last_pivot.smc_swing_type == "high" else "bullish"
+    candidate_type: SwingType = "low" if current_leg == "bearish" else "high"
+
+    # 2) scan only the candles we *already* have (<length> right-hand side
+    #    is still missing, so they are all “candidates” by definition)
+    tail = df.iloc[-length:] if len(df) >= length else df
+
+    # Handle both uppercase and lowercase column names
+    high_col = "high" if "high" in tail.columns else "High" if "High" in tail.columns else None
+    low_col = "low" if "low" in tail.columns else "Low" if "Low" in tail.columns else None
+
+    if high_col is None or low_col is None:
+        missing = []
+        if high_col is None: missing.append("high/High")
+        if low_col is None: missing.append("low/Low")
+        raise KeyError(f"Missing required columns: {', '.join(missing)}")
+
+    if candidate_type == "high":
+        idx  = tail[high_col].idxmax()
+        lvl  = float(tail.loc[idx, high_col])
+    else:                               # candidate LOW
+        idx  = tail[low_col].idxmin()
+        lvl  = float(tail.loc[idx, low_col])
+
+    return PivotCandidate(
+        smc_last_pivot_candidate_time  = pd.Timestamp(idx),
+        smc_last_pivot_candidate_level = lvl,
+        smc_last_pivot_candidate_type  = candidate_type,
+    )
+
+# ── BOS & CHoCH detector (LuxAlgo-style) ────────────────────────────────────
+# ── BOS & CHoCH detector (structure-bias aware) ────────────────────────────
+# ── BOS & CHoCH detector (bias-aware, first break = CHOCH) ──────────────────
+# ── BOS & CHoCH detector – sets strong/weak flags exactly like LuxAlgo ──────
+def detect_structure_events(
+    df: pd.DataFrame,
+    swings: List[SwingPoint],
+    interval: str | None = None,
+) -> List[StructureEvent]:
+    """
+    • Emits BOS or CHOCH:
+          BOS   → break direction   == current bias
+          CHOCH → break direction   != current bias
+      The first break (bias is None) is always a CHOCH.
+
+    • At the moment the break occurs it also flags:
+          bias = bullish  → swing-LOW just broken ⇒ strong_low
+          bias = bearish  → swing-HIGH just broken ⇒ strong_high
+      (The opposite swing automatically becomes “weak” by leaving its flag None.)
+    """
+    interval = interval or "unknown"
+    events: List[StructureEvent] = []
+
+    # ── running state -------------------------------------------------------
+    bias: Optional[str] = None                    # "bullish" / "bearish"
+    last_high_level = last_low_level = None
+    last_high_time  = last_low_time  = None
+
+    # quick look-up so we can mutate a swing by its pivot-time
+    pivot_by_time = {s.smc_swing_pivot_time: s for s in swings}
+
+    # swings streamed in confirmation-time order
+    swing_iter = iter(sorted(swings, key=lambda s: s.smc_swing_confirmation_time))
+    next_sw = next(swing_iter, None)
+
+    # ── helper: create event + maintain single strong-flag per type ─────────
+    last_strong_high_time: Optional[pd.Timestamp] = None
+    last_strong_low_time: Optional[pd.Timestamp] = None
+
+    def add_event(
+            ev_type: str,
+            direction: str,
+            price: float,
+            break_time: pd.Timestamp,
+            swing_time: pd.Timestamp,
+    ) -> None:
+        nonlocal bias, last_strong_high_time, last_strong_low_time
+
+        # 1) record the StructureEvent
+        events.append(
+            StructureEvent.create(
+                event_type=ev_type,
+                direction=direction,
+                interval=interval,
+                price=price,
+                break_time=break_time,
+                swing_time=swing_time,
+            )
+        )
+
+        # 2) update strong / weak flags so only ONE of each type remains
+        if direction == "bullish":  # bias turns bullish
+            bias = "bullish"
+
+            # ---- set the broken LOW as strong_low -------------------------
+            low_sw = pivot_by_time.get(swing_time)
+            if low_sw and low_sw.smc_swing_type == "low":
+                low_sw.smc_swing_strong = 1  # strong
+                # clear previous strong_low, if any
+                if last_strong_low_time and last_strong_low_time != swing_time:
+                    prev = pivot_by_time[last_strong_low_time]
+                    prev.smc_swing_strong = 0  # weak
+                last_strong_low_time = swing_time
+
+            # ---- ensure latest HIGH becomes weak --------------------------
+            if last_high_time and last_high_time != swing_time:
+                high_sw = pivot_by_time.get(last_high_time)
+                if high_sw:
+                    high_sw.smc_swing_strong = 0  # weak
+
+        else:  # bias turns bearish
+            bias = "bearish"
+
+            # ---- set the broken HIGH as strong_high -----------------------
+            high_sw = pivot_by_time.get(swing_time)
+            if high_sw and high_sw.smc_swing_type == "high":
+                high_sw.smc_swing_strong = 1  # strong
+                # clear previous strong_high, if any
+                if last_strong_high_time and last_strong_high_time != swing_time:
+                    prev = pivot_by_time[last_strong_high_time]
+                    prev.smc_swing_strong = 0  # weak
+                last_strong_high_time = swing_time
+
+            # ---- ensure latest LOW becomes weak ---------------------------
+            if last_low_time and last_low_time != swing_time:
+                low_sw = pivot_by_time.get(last_low_time)
+                if low_sw:
+                    low_sw.smc_swing_strong = 0  # weak
+
+    # ── main streaming loop -------------------------------------------------
+    for ts, row in df.iterrows():
+        # Handle both uppercase and lowercase column names
+        if "close" in row:
+            close_p = row["close"]
+        elif "Close" in row:
+            close_p = row["Close"]
+        else:
+            raise KeyError("Neither 'close' nor 'Close' column found in DataFrame row")
+
+        # advance swings confirmed up to this candle
+        while next_sw and next_sw.smc_swing_confirmation_time <= ts:
+            if next_sw.smc_swing_type == "high":
+                last_high_level = next_sw.smc_swing_level
+                last_high_time  = next_sw.smc_swing_pivot_time
+            else:
+                last_low_level  = next_sw.smc_swing_level
+                last_low_time   = next_sw.smc_swing_pivot_time
+            next_sw = next(swing_iter, None)
+
+        # ------- bullish break (close > swing-HIGH) -------------------------
+        if last_high_level is not None and close_p > last_high_level:
+            ev_type = "BOS" if bias == "bullish" else "CHOCH"
+            add_event(ev_type, "bullish", last_high_level, ts, last_high_time)
+            last_high_level = None                      # prevent duplicates
+
+        # ------- bearish break (close < swing-LOW) --------------------------
+        if last_low_level is not None and close_p < last_low_level:
+            ev_type = "BOS" if bias == "bearish" else "CHOCH"
+            add_event(ev_type, "bearish", last_low_level, ts, last_low_time)
+            last_low_level = None
+
+    return events
+
+# ── Fair-Value Gap container ────────────────────────────────────────────────
+# ── Fair-Value Gap container ────────────────────────────────────────────────
+FVGDirection = Literal["bullish", "bearish"]
+FVGStatus    = Literal["active", "mitigated"]
+
+
+@dataclass
+class FairValueGap:
+    """
+    Raw FVG record – matches the field list you provided.
+    """
+
+    smc_fvg_id: str                        # “FVG-xxxx”
+    smc_fvg_created_time: pd.Timestamp     # when the FVG event was identified
+    smc_fvg_direction: FVGDirection        # bullish / bearish
+    smc_fvg_interval: str                  # e.g. “60m”
+    smc_fvg_top: float                     # upper price of zone
+    smc_fvg_bottom: float                  # lower price of zone
+    smc_fvg_status: FVGStatus              # "active" | "mitigated"
+    smc_fvg_mitigated_time: Optional[pd.Timestamp]
+    smc_fvg_size: float                    # New: size of the FVG as a normalized percentage
+
+    smc_fvg_left_time: pd.Timestamp        # candle L (for plotting)
+    # Renamed smc_fvg_right_time to smc_fvg_creation_candle_time for clarity,
+    # and this will be used to populate smc_fvg_created_time.
+    smc_fvg_creation_candle_time: pd.Timestamp
+
+
+    # --------------------------------------------------------------------- #
+    @staticmethod
+    def new_id() -> str:
+        return f"FVG-{uuid.uuid4().hex[:8]}"
+
+    @classmethod
+    def create(
+            cls,
+            direction: FVGDirection,
+            interval: str,
+            top: float,
+            bottom: float,
+            left_time: pd.Timestamp,
+            creation_candle_time: pd.Timestamp,  # Use this for the created_time field
+            size: float = 0.0,  # New argument
+    ) -> "FairValueGap":
+        """
+        Helper to auto-populate id, created_time, and default status.
+        """
+        return cls(
+            smc_fvg_id=cls.new_id(),
+            smc_fvg_created_time=creation_candle_time,  # Now uses the candle time
+            smc_fvg_direction=direction,
+            smc_fvg_interval=interval,
+            smc_fvg_top=top,
+            smc_fvg_bottom=bottom,
+            smc_fvg_status="active",
+            smc_fvg_mitigated_time=None,
+            smc_fvg_size=size,  # New: Pass the size here
+            smc_fvg_left_time=left_time,
+            smc_fvg_creation_candle_time=creation_candle_time,
+        )
+# ── Order Block container ──────────────────────────────────────────────────
+OBDirection = Literal["bullish", "bearish"]
+OBStatus    = Literal["active", "mitigated"]
+
+
+@dataclass
+class OrderBlock:
+    """
+    Order Block record.
+    """
+
+    smc_ob_id: str
+    smc_ob_created_time: pd.Timestamp # This will now store the time the OB was identified
+    smc_ob_direction: OBDirection
+    smc_ob_interval: str
+    smc_ob_top: float
+    smc_ob_bottom: float
+    smc_ob_status: OBStatus
+    smc_ob_mitigated_time: Optional[pd.Timestamp]
+    smc_ob_strength: float # Ratio of smaller to larger total volume of bullish/bearish candles within the leg
+    smc_ob_size: float
+    smc_ob_left_time: pd.Timestamp
+    # Renamed smc_ob_right_time to smc_ob_confirmation_time for clarity,
+    # and this will be the value used for smc_ob_created_time.
+    smc_ob_confirmation_time: pd.Timestamp
+
+
+    @staticmethod
+    def new_id() -> str:
+        return f"OB-{uuid.uuid4().hex[:8]}"
+
+    @classmethod
+    def create(
+        cls,
+        direction: OBDirection,
+        interval: str,
+        top: float,
+        bottom: float,
+        left_time: pd.Timestamp,
+        confirmation_time: pd.Timestamp, # Use this for the created_time field
+        strength: float = 0.0,
+        size: float = 0.0,
+    ) -> "OrderBlock":
+        return cls(
+            smc_ob_id=cls.new_id(),
+            smc_ob_created_time=confirmation_time, # Now uses the confirmation time of the OB
+            smc_ob_direction=direction,
+            smc_ob_interval=interval,
+            smc_ob_top=top,
+            smc_ob_bottom=bottom,
+            smc_ob_status="active",
+            smc_ob_mitigated_time=None,
+            smc_ob_strength=strength,
+            smc_ob_size=size,
+            smc_ob_left_time=left_time,
+            smc_ob_confirmation_time=confirmation_time,
+        )
+
+ # ── Trailing Extremes container ─────────────────────────────────────────────
+@dataclass
+class TrailingExtremes:
+        """
+        UDT representing last swing extremes (top & bottom) similar to Pinescript's trailingExtremes.
+        """
+        top: float
+        bottom: float
+        bar_time: pd.Timestamp  # last swing bar time (used for zone start X in Pinescript)
+        bar_index: int  # last swing bar index (optional, but mirrors Pinescript)
+        last_top_time: pd.Timestamp  # time of the actual highest high since the last swing updated 'top'
+        last_bottom_time: pd.Timestamp  # time of the actual lowest low since the last swing updated 'bottom'
+
+        @classmethod
+        def new_instance(cls):
+            # Initialize with dummy values. These will be updated with actual market data.
+            return cls(
+                top=float('nan'),
+                bottom=float('nan'),
+                bar_time=pd.Timestamp.min,
+                bar_index=-1,
+                last_top_time=pd.Timestamp.min,
+                last_bottom_time=pd.Timestamp.min
+            )
+# ── LuxAlgo-exact FVG detector – returns FairValueGap objects ───────────────
+def detect_fvgs(
+    df: pd.DataFrame,
+    interval: str | None = None,
+) -> List[FairValueGap]:
+    interval = interval or "unknown"
+    fvgs: List[FairValueGap] = []
+
+    # Handle both uppercase and lowercase column names
+    hi = df["high"].values if "high" in df.columns else df["High"].values if "High" in df.columns else None
+    lo = df["low"].values if "low" in df.columns else df["Low"].values if "Low" in df.columns else None
+    op = df["open"].values if "open" in df.columns else df["Open"].values if "Open" in df.columns else None
+    cl = df["close"].values if "close" in df.columns else df["Close"].values if "Close" in df.columns else None
+
+    if hi is None or lo is None or op is None or cl is None:
+        missing = []
+        if hi is None: missing.append("high/High")
+        if lo is None: missing.append("low/Low")
+        if op is None: missing.append("open/Open")
+        if cl is None: missing.append("close/Close")
+        raise KeyError(f"Missing required columns: {', '.join(missing)}")
+    tm = df.index
+
+    cum_abs = 0.0  # cumulative |barDelta|
+    for i in range(2, len(df)):
+        # centre-bar momentum filter
+        bar_delta = (cl[i - 1] - op[i - 1]) / (op[i - 1] * 100)
+        cum_abs += abs(bar_delta)
+        threshold = (cum_abs / i) * 2          # 2 × mean(|Δ|) up to bar i-1
+
+        highL, lowL = hi[i - 2], lo[i - 2]     # left bar
+        highR, lowR = hi[i],     lo[i]         # right bar
+
+        # ——— Bullish FVG ——————————————————————————————————————————
+        if (
+                lowR > highL
+                and cl[i - 1] > highL
+                and bar_delta > threshold
+        ):
+            fvg_size_abs = lowR - highL
+            # Normalize by the close price of the creation candle
+            base_price_for_normalization = cl[i]
+            # Avoid division by zero for extremely rare cases or bad data
+            if base_price_for_normalization == 0:
+                fvg_size_percentage = 0.0
+            else:
+                fvg_size_percentage = (fvg_size_abs / base_price_for_normalization) * 100
+
+            fvgs.append(
+                FairValueGap.create(
+                    direction="bullish",
+                    interval=interval,
+                    top=lowR,
+                    bottom=highL,
+                    left_time=tm[i - 2],
+                    creation_candle_time=tm[i],
+                    size=fvg_size_percentage,  # Pass the calculated size
+                )
+            )
+
+        # ——— Bearish FVG —————————————————————————————————————————
+        if (
+                highR < lowL
+                and cl[i - 1] < lowL
+                and -bar_delta > threshold
+        ):
+            fvg_size_abs = lowL - highR
+            # Normalize by the close price of the creation candle
+            base_price_for_normalization = cl[i]
+            # Avoid division by zero for extremely rare cases or bad data
+            if base_price_for_normalization == 0:
+                fvg_size_percentage = 0.0
+            else:
+                fvg_size_percentage = (fvg_size_abs / base_price_for_normalization) * 100
+
+            fvgs.append(
+                FairValueGap.create(
+                    direction="bearish",
+                    interval=interval,
+                    top=lowL,
+                    bottom=highR,
+                    left_time=tm[i - 2],
+                    creation_candle_time=tm[i],
+                    size=fvg_size_percentage,  # Pass the calculated size
+                )
+            )
+
+    return fvgs
+# ── mark FVGs "mitigated" when price retraces ≥50 % of gap ─────────────────
+def mark_fvg_mitigations(df: pd.DataFrame, fvgs: List[FairValueGap]) -> None:
+    """
+    Mutates each FairValueGap in `fvgs`.
+    FVG mitigation logic varies by timeframe:
+    - 15m: any wick or close penetrating the fvg by ≥ 25%
+    - 1h: any wick or close penetrating the fvg by ≥ 40%
+    - 4h: any wick or close penetrating the fvg by ≥ 50%
+    - 1d: any wick or close penetrating the fvg by ≥ 60%
+    """
+    # Handle both uppercase and lowercase column names
+    lo = df["low"] if "low" in df.columns else df["Low"] if "Low" in df.columns else None
+    hi = df["high"] if "high" in df.columns else df["High"] if "High" in df.columns else None
+    cl = df["close"] if "close" in df.columns else df["Close"] if "Close" in df.columns else None
+
+    if lo is None or hi is None or cl is None:
+        missing = []
+        if lo is None: missing.append("low/Low")
+        if hi is None: missing.append("high/High")
+        if cl is None: missing.append("close/Close")
+        raise KeyError(f"Missing required columns: {', '.join(missing)}")
+
+    for gap in fvgs:
+        if gap.smc_fvg_status == "mitigated":
+            continue # Already mitigated, skip
+
+        # start scanning from the bar AFTER the FVG's creation candle
+        try:
+            start_idx = df.index.get_loc(gap.smc_fvg_creation_candle_time) + 1
+        except KeyError:
+            continue  # timestamp mismatch – skip
+
+        # Determine penetration threshold based on timeframe
+        penetration_threshold = 0.25  # Default for 15m (25% penetration)
+
+        # Convert interval to lowercase for case-insensitive comparison
+        interval_lower = gap.smc_fvg_interval.lower()
+
+        if '1h' in interval_lower or '1hr' in interval_lower or '60m' in interval_lower:
+            penetration_threshold = 0.40  # 40% for 1h
+        elif '4h' in interval_lower or '4hr' in interval_lower or '240m' in interval_lower:
+            penetration_threshold = 0.50  # 50% for 4h
+        elif '1d' in interval_lower or 'daily' in interval_lower or '1440m' in interval_lower:
+            penetration_threshold = 0.60  # 60% for 1d
+
+        # Calculate the size of the FVG
+        fvg_size = gap.smc_fvg_top - gap.smc_fvg_bottom
+
+        # Calculate penetration thresholds
+        bullish_threshold = gap.smc_fvg_bottom - (fvg_size * penetration_threshold)
+        bearish_threshold = gap.smc_fvg_top + (fvg_size * penetration_threshold)
+
+        first_hit = None
+        for i in range(start_idx, len(df)):
+            current_time = df.index[i]
+
+            if gap.smc_fvg_direction == "bullish":
+                # For bullish FVG: check if price penetrates below the threshold
+                if lo.iloc[i] < bullish_threshold or cl.iloc[i] < bullish_threshold:
+                    first_hit = current_time
+                    break
+            else:  # bearish
+                # For bearish FVG: check if price penetrates above the threshold
+                if hi.iloc[i] > bearish_threshold or cl.iloc[i] > bearish_threshold:
+                    first_hit = current_time
+                    break
+
+        if first_hit is not None:
+            gap.smc_fvg_status = "mitigated"
+            gap.smc_fvg_mitigated_time = first_hit
+# ── Order Block detector ───────────────────────────────────────────────────
+def detect_order_blocks(
+    df: pd.DataFrame,
+    swings: List[SwingPoint],
+    events: List[StructureEvent], # NEW: Add structure events as input
+    interval: str | None = None,
+) -> List[OrderBlock]:
+    interval = interval or "unknown"
+    order_blocks: List[OrderBlock] = []
+
+    # Prepare data for calculations, similar to Pinescript's parsedHighs/Lows and volatility measures
+    # Handle both uppercase and lowercase column names
+    highs = df["high"].values if "high" in df.columns else df["High"].values if "High" in df.columns else None
+    lows = df["low"].values if "low" in df.columns else df["Low"].values if "Low" in df.columns else None
+    opens = df["open"].values if "open" in df.columns else df["Open"].values if "Open" in df.columns else None
+    closes = df["close"].values if "close" in df.columns else df["Close"].values if "Close" in df.columns else None
+    times = df.index
+    volumes = df["volume"].values if "volume" in df.columns else df["Volume"].values if "Volume" in df.columns else None
+
+    if highs is None or lows is None or opens is None or closes is None or volumes is None:
+        missing = []
+        if highs is None: missing.append("high/High")
+        if lows is None: missing.append("low/Low")
+        if opens is None: missing.append("open/Open")
+        if closes is None: missing.append("close/Close")
+        if volumes is None: missing.append("volume/Volume")
+        raise KeyError(f"Missing required columns: {', '.join(missing)}")
+
+    # ... (volatility_measure and parsed_highs/lows calculation - keep this as is) ...
+    # This block remains unchanged from your current code
+
+    # Calculate overall mean and standard deviation for volume (for Z-score)
+    # Handle both uppercase and lowercase column names for volume
+    volume_col = "volume" if "volume" in df.columns else "Volume" if "Volume" in df.columns else None
+
+    if volume_col is None:
+        # If volume column is missing, use default values
+        mean_volume = 0.0
+        std_volume = 1e-9
+    else:
+        mean_volume = df[volume_col].mean()
+        std_volume = df[volume_col].std()
+        if std_volume == 0:
+            std_volume = 1e-9
+
+    atr_period = 200
+    if len(df) < atr_period:
+        atr_values = pd.Series([0.0] * len(df))
+    else:
+        # Get high, low, close columns with case-insensitive handling
+        high_col = "high" if "high" in df.columns else "High" if "High" in df.columns else None
+        low_col = "low" if "low" in df.columns else "Low" if "Low" in df.columns else None
+        close_col = "close" if "close" in df.columns else "Close" if "Close" in df.columns else None
+
+        if high_col is None or low_col is None or close_col is None:
+            missing = []
+            if high_col is None: missing.append("high/High")
+            if low_col is None: missing.append("low/Low")
+            if close_col is None: missing.append("close/Close")
+            raise KeyError(f"Missing required columns for ATR calculation: {', '.join(missing)}")
+
+        atr_values = df[high_col] - df[low_col]
+        for i in range(1, len(atr_values)):
+            atr_values[i] = max(df[high_col].iloc[i] - df[low_col].iloc[i],
+                                abs(df[high_col].iloc[i] - df[close_col].iloc[i - 1]),
+                                abs(df[low_col].iloc[i] - df[close_col].iloc[i - 1]))
+        atr_values = pd.Series(atr_values).rolling(window=atr_period).mean().fillna(0.0)
+
+    cum_tr_sum = 0.0
+    parsed_highs_list = []  # Use list temporarily for appending
+    parsed_lows_list = []  # Use list temporarily for appending
+
+    for i in range(len(df)):
+        current_high = highs[i]
+        current_low = lows[i]
+
+        if i > 0:
+            tr = max(current_high - current_low, abs(current_high - closes[i - 1]), abs(current_low - closes[i - 1]))
+            cum_tr_sum += tr
+
+        volatility_measure = 0.0
+        if DEFAULT_ORDER_BLOCK_FILTER == "ATR":
+            if i < len(atr_values):
+                volatility_measure = atr_values.iloc[i]
+        else:  # "Cumulative Mean Range"
+            if i > 0:
+                volatility_measure = cum_tr_sum / i
+
+        high_volatility_bar = (current_high - current_low) >= (2 * volatility_measure)
+
+        parsed_highs_list.append(current_low if high_volatility_bar else current_high)
+        parsed_lows_list.append(current_high if high_volatility_bar else current_low)
+
+    parsed_highs = pd.Series(parsed_highs_list, index=times)  # Convert to Series after loop
+    parsed_lows = pd.Series(parsed_lows_list, index=times)  # Convert to Series after loop
+
+    # New logic: Iterate through structure events to identify order blocks
+    for event in events:
+        event_swing_time = event.smc_event_swing_point
+        event_break_time = event.smc_event_break_time
+        event_direction = event.smc_event_direction
+
+        # Find the swing point object that was broken
+        broken_swing = next((s for s in swings if s.smc_swing_pivot_time == event_swing_time), None)
+        if broken_swing is None:
+            continue  # Should not happen if event_swing_point is valid
+
+        ob_top = None
+        ob_bottom = None
+        ob_left_time = None
+        # The confirmation time for the OB will be the event_break_time as per Pinescript's call from displayStructure
+        ob_confirmation_time = event_break_time
+
+        # Determine the range for slicing parsedHighs/Lows based on the leg ending at the broken swing.
+        # Pinescript: a_rray := parsedHighs.slice(p_ivot.barIndex,bar_index)
+        # Here, p_ivot.barIndex is the index of the broken swing. bar_index is the current bar (event_break_time).
+        # We need the leg *leading up to* the broken swing.
+        # The OB candle is found between the *previous* swing point and the *broken* swing point.
+
+        # Find the swing *before* the broken_swing to define the leg start
+        prev_swing = None
+        swings_sorted = sorted(swings, key=lambda s: s.smc_swing_pivot_time)
+        try:
+            broken_swing_idx = swings_sorted.index(broken_swing)
+            if broken_swing_idx > 0:
+                prev_swing = swings_sorted[broken_swing_idx - 1]
+        except ValueError:
+            continue  # Should not happen
+
+        if prev_swing is None:  # This would be the very first swing, no preceding leg
+            continue
+
+        leg_start_time = prev_swing.smc_swing_pivot_time
+        leg_end_time = broken_swing.smc_swing_pivot_time
+
+        # Ensure correct time order for slicing, although usually leg_start_time < leg_end_time
+        if leg_start_time > leg_end_time:
+            leg_start_time, leg_end_time = leg_end_time, leg_start_time
+
+        try:
+            start_idx = df.index.get_loc(leg_start_time)
+            end_idx = df.index.get_loc(leg_end_time)
+        except KeyError:
+            continue  # Skip if timestamps are not found
+
+        leg_parsed_highs = parsed_highs.iloc[start_idx: end_idx + 1]
+        leg_parsed_lows = parsed_lows.iloc[start_idx: end_idx + 1]
+
+        if leg_parsed_highs.empty or leg_parsed_lows.empty:
+            continue
+
+        if event_direction == "bullish":  # Bullish BOS/CHOCH means price broke above a high. OB is a bullish OB.
+            # LuxAlgo `storeOrdeBlock(p_ivot, ..., BULLISH)`: p_ivot is the broken HIGH.
+            # It then searches `parsedLows.slice(p_ivot.barIndex, bar_index)` for `a_rray.min()`.
+            # This means it's looking for the lowest point FROM the broken high's time TO the current bar's time.
+            # This is complex because Pinescript implicitly uses the current `bar_index` when `storeOrdeBlock` is called.
+            # In our debiased model, the "current bar" is `event_break_time`.
+            # So, we should slice from the *broken swing* up to the *break time* (inclusive).
+
+            # The OB is formed by the candle with the lowest parsed low *between* the broken high and the break time.
+            # Correcting the slice to be from the broken swing pivot time up to the break time
+            ob_slice_start_idx = df.index.get_loc(broken_swing.smc_swing_pivot_time)
+            ob_slice_end_idx = df.index.get_loc(event_break_time)
+
+            ob_search_lows = parsed_lows.iloc[ob_slice_start_idx: ob_slice_end_idx + 1]
+            if ob_search_lows.empty:
+                continue
+
+            ob_bottom = ob_search_lows.min()
+            ob_left_time = ob_search_lows.idxmin()
+            ob_top = parsed_highs.loc[ob_left_time]  # Corresponding parsed high
+            ob_direction = "bullish"
+
+        elif event_direction == "bearish":  # Bearish BOS/CHOCH means price broke below a low. OB is a bearish OB.
+            # LuxAlgo `storeOrdeBlock(p_ivot, ..., BEARISH)`: p_ivot is the broken LOW.
+            # It then searches `parsedHighs.slice(p_ivot.barIndex, bar_index)` for `a_rray.max()`.
+            # This means it's looking for the highest point FROM the broken low's time TO the current bar's time.
+
+            # The OB is formed by the candle with the highest parsed high *between* the broken low and the break time.
+            # Correcting the slice to be from the broken swing pivot time up to the break time
+            ob_slice_start_idx = df.index.get_loc(broken_swing.smc_swing_pivot_time)
+            ob_slice_end_idx = df.index.get_loc(event_break_time)
+
+            ob_search_highs = parsed_highs.iloc[ob_slice_start_idx: ob_slice_end_idx + 1]
+            if ob_search_highs.empty:
+                continue
+
+            ob_top = ob_search_highs.max()
+            ob_left_time = ob_search_highs.idxmax()
+            ob_bottom = parsed_lows.loc[ob_left_time]  # Corresponding parsed low
+            ob_direction = "bearish"
+
+        if ob_direction and ob_top is not None and ob_bottom is not None:
+            # Calculate OB strength (Volume ratio, as per instructions)
+            # Find the index range of the leg that created the OB (from previous swing to broken swing)
+            # This is different from the OB formation candle (ob_left_time).
+            # The strength refers to the entire *leg* that formed the OB.
+            # Pinescript: "sum the volumes of all bullish (close > open) and bearish (close < open) candles within that leg separately"
+            # The leg is from `prev_swing.smc_swing_pivot_time` to `broken_swing.smc_swing_pivot_time`.
+            strength = 0.0  # Initialize strength
+            if prev_swing is not None and broken_swing is not None:
+                leg_vol_start_idx = df.index.get_loc(prev_swing.smc_swing_pivot_time)
+                leg_vol_end_idx = df.index.get_loc(broken_swing.smc_swing_pivot_time)
+
+                leg_df = df.iloc[leg_vol_start_idx: leg_vol_end_idx + 1]
+
+                # Handle both uppercase and lowercase column names
+                close_col = 'close' if 'close' in leg_df.columns else 'Close' if 'Close' in leg_df.columns else None
+                open_col = 'open' if 'open' in leg_df.columns else 'Open' if 'Open' in leg_df.columns else None
+                volume_col = 'volume' if 'volume' in leg_df.columns else 'Volume' if 'Volume' in leg_df.columns else None
+
+                if close_col is None or open_col is None or volume_col is None:
+                    missing = []
+                    if close_col is None: missing.append("close/Close")
+                    if open_col is None: missing.append("open/Open")
+                    if volume_col is None: missing.append("volume/Volume")
+                    raise KeyError(f"Missing required columns in leg_df: {', '.join(missing)}")
+
+                bullish_volumes = leg_df[leg_df[close_col] > leg_df[open_col]][volume_col].sum()
+                bearish_volumes = leg_df[leg_df[close_col] < leg_df[open_col]][volume_col].sum()
+
+                if bullish_volumes > 0 and bearish_volumes > 0:
+                    strength = min(bullish_volumes, bearish_volumes) / max(bullish_volumes, bearish_volumes)
+                elif bullish_volumes == 0 and bearish_volumes == 0:
+                    strength = 0.0  # No volume in leg
+                else:
+                    strength = 1.0  # One side has volume, the other doesn't (ratio effectively 1)
+            ob_size_abs = abs(ob_top - ob_bottom)
+            # Normalize by the close price of the candle that is the "left time" of the OB
+            # Get the index of the ob_left_time from the main DataFrame
+            try:
+                # Ensure ob_left_time is a valid timestamp for lookup
+                ob_left_time_ts = pd.Timestamp(ob_left_time)
+                # Check if ob_left_time_ts is within the DataFrame index range
+                if ob_left_time_ts in df.index:
+                    # Handle both uppercase and lowercase column names
+                    close_col = 'close' if 'close' in df.columns else 'Close' if 'Close' in df.columns else None
+                    if close_col is None:
+                        raise KeyError("Neither 'close' nor 'Close' column found in DataFrame")
+                    normalization_price = df.loc[ob_left_time_ts][close_col]
+                    if normalization_price == 0:
+                        ob_size_percentage = 0.0 # Avoid division by zero
+                    else:
+                        ob_size_percentage = (ob_size_abs / normalization_price) * 100
+                else:
+                    ob_size_percentage = 0.0 # ob_left_time not found in df index
+            except Exception:
+                ob_size_percentage = 0.0 # General error during price lookup
+
+
+            print(
+                f"Detected OB: Direction={ob_direction}, LeftTime={ob_left_time}, Top={ob_top}, Bottom={ob_bottom}, ConfirmationTime={ob_confirmation_time}, Strength={strength}, Size={ob_size_percentage:.2f}%")
+
+            order_blocks.append(
+                OrderBlock.create(
+                    direction=ob_direction,
+                    interval=interval,
+                    top=ob_top,
+                    bottom=ob_bottom,
+                    left_time=ob_left_time,
+                    confirmation_time=ob_confirmation_time,
+                    strength=float(strength),
+                    size=ob_size_percentage, # Pass the calculated size
+                )
+            )
+
+    return order_blocks
+
+# ── mark Order Blocks "mitigated" ──────────────────────────────────────────
+def mark_order_block_mitigations(
+    df: pd.DataFrame,
+    order_blocks: List[OrderBlock],
+) -> None:
+    """
+    Mutates each OrderBlock in `order_blocks`.
+    Order Block mitigation logic varies by timeframe:
+    - 15m: any wick or close entering an order block (default)
+    - 1h: any wick or close penetrating the order block by ≥ 10%
+    - 4h: any wick or close penetrating the order block by ≥ 20%
+    - 1d: any wick or close penetrating the order block by ≥ 30%
+    """
+    # Handle both uppercase and lowercase column names
+    lo = df["low"] if "low" in df.columns else df["Low"] if "Low" in df.columns else None
+    hi = df["high"] if "high" in df.columns else df["High"] if "High" in df.columns else None
+    cl = df["close"] if "close" in df.columns else df["Close"] if "Close" in df.columns else None
+
+    if lo is None or hi is None or cl is None:
+        missing = []
+        if lo is None: missing.append("low/Low")
+        if hi is None: missing.append("high/High")
+        if cl is None: missing.append("close/Close")
+        raise KeyError(f"Missing required columns: {', '.join(missing)}")
+
+    for ob in order_blocks:
+        if ob.smc_ob_status == "mitigated":
+            continue # Already mitigated, skip
+
+        # Start scanning from the bar AFTER the OB's confirmation time
+        try:
+            start_idx = df.index.get_loc(ob.smc_ob_confirmation_time) + 1
+        except KeyError:
+            continue  # timestamp mismatch – skip
+
+        # Determine penetration threshold based on timeframe
+        penetration_threshold = 0.0  # Default for 15m (any entry)
+
+        # Convert interval to lowercase for case-insensitive comparison
+        interval_lower = ob.smc_ob_interval.lower()
+
+        if '1h' in interval_lower or '1hr' in interval_lower or '60m' in interval_lower:
+            penetration_threshold = 0.10  # 10% for 1h
+        elif '4h' in interval_lower or '4hr' in interval_lower or '240m' in interval_lower:
+            penetration_threshold = 0.20  # 20% for 4h
+        elif '1d' in interval_lower or 'daily' in interval_lower or '1440m' in interval_lower:
+            penetration_threshold = 0.30  # 30% for 1d
+
+        # Calculate the size of the order block
+        ob_size = ob.smc_ob_top - ob.smc_ob_bottom
+
+        # Calculate penetration thresholds
+        bullish_threshold = ob.smc_ob_bottom - (ob_size * penetration_threshold)
+        bearish_threshold = ob.smc_ob_top + (ob_size * penetration_threshold)
+
+        first_hit_time = None
+        for i in range(start_idx, len(df)):
+            current_time = df.index[i]
+
+            if ob.smc_ob_direction == "bullish":
+                # For bullish OB: check if price penetrates below the threshold
+                if lo.iloc[i] < bullish_threshold or cl.iloc[i] < bullish_threshold:
+                    first_hit_time = current_time
+                    break
+            else: # bearish
+                # For bearish OB: check if price penetrates above the threshold
+                if hi.iloc[i] > bearish_threshold or cl.iloc[i] > bearish_threshold:
+                    first_hit_time = current_time
+                    break
+
+        if first_hit_time is not None:
+            ob.smc_ob_status = "mitigated"
+            ob.smc_ob_mitigated_time = first_hit_time
+# ── Update Trailing Extremes ───────────────────────────────────────────────
+def update_and_get_trailing_extremes(
+    df: pd.DataFrame,
+    swings: List[SwingPoint],
+) -> TrailingExtremes:
+    """
+    Updates and returns the final trailing high and low based on LuxAlgo's logic.
+    This mimics the stateful update of 'trailingExtremes' UDT in Pinescript.
+    """
+    trailing = TrailingExtremes.new_instance()
+
+    # Sort swings by pivot time to process them chronologically
+    sorted_swings = sorted(swings, key=lambda s: s.smc_swing_pivot_time)
+
+    # Initialize trailing extremes with the first detected swing, if any
+    if sorted_swings:
+        first_swing = sorted_swings[0]
+        trailing.top = first_swing.smc_swing_level if first_swing.smc_swing_type == "high" else float('nan')
+        trailing.bottom = first_swing.smc_swing_level if first_swing.smc_swing_type == "low" else float('nan')
+
+        # Pinescript: var initialTime = time
+        # This means the very first high/low of the chart can also initialize extremes if no swing exists yet.
+        # For simplicity, if no swings are found, we'll initialize with the first bar's high/low later.
+
+        # Initialize last_top_time and last_bottom_time based on the first swing's pivot time if it set the initial top/bottom
+        trailing.last_top_time = first_swing.smc_swing_pivot_time if first_swing.smc_swing_type == "high" else pd.Timestamp.min
+        trailing.last_bottom_time = first_swing.smc_swing_pivot_time if first_swing.smc_swing_type == "low" else pd.Timestamp.min
+
+        # Pinescript sets trailing.barTime based on the last swing that updated it.
+        # Initialize bar_time with the first swing's pivot time
+        trailing.bar_time = first_swing.smc_swing_pivot_time
+        trailing.bar_index = df.index.get_loc(first_swing.smc_swing_pivot_time)
+    else:
+        # If no swings at all, initialize with the first bar's high/low
+        if not df.empty:
+            trailing.top = df['high'].iloc[0]
+            trailing.bottom = df['low'].iloc[0]
+            trailing.last_top_time = df.index[0]
+            trailing.last_bottom_time = df.index[0]
+            trailing.bar_time = df.index[0]
+            trailing.bar_index = 0
+        else:
+            return trailing # Return uninitialized if df is empty
+
+    swing_iter = iter(sorted_swings)
+    next_swing = next(swing_iter, None) # Advance to the actual first swing to process, if sorted_swings was not empty
+
+    # Process DataFrame bar by bar
+    # Handle both uppercase and lowercase column names
+    high_col = "high" if "high" in df.columns else "High" if "High" in df.columns else None
+    low_col = "low" if "low" in df.columns else "Low" if "Low" in df.columns else None
+
+    if high_col is None or low_col is None:
+        missing = []
+        if high_col is None: missing.append("high/High")
+        if low_col is None: missing.append("low/Low")
+        raise KeyError(f"Missing required columns: {', '.join(missing)}")
+
+    for i, (ts, row) in enumerate(df.iterrows()):
+        current_high = row[high_col]
+        current_low = row[low_col]
+
+        # Pinescript: updateTrailingExtremes()
+        # trailing.top            := math.max(high,trailing.top)
+        # trailing.lastTopTime    := trailing.top == high ? time : trailing.lastTopTime
+        # trailing.bottom         := math.min(low,trailing.bottom)
+        # trailing.lastBottomTime := trailing.bottom == low ? time : trailing.lastBottomTime
+
+        # Update trailing extremes based on current bar's high/low
+        if not pd.isna(trailing.top) and current_high > trailing.top:
+            trailing.top = current_high
+            trailing.last_top_time = ts
+        if not pd.isna(trailing.bottom) and current_low < trailing.bottom:
+            trailing.bottom = current_low
+            trailing.last_bottom_time = ts
+
+        # Pinescript: getCurrentStructure() updates trailing.top/bottom and trailing.barTime
+        # This happens BEFORE updateTrailingExtremes() on the same bar.
+        # So, if a swing confirms, it sets a new `trailing.top` or `trailing.bottom`,
+        # and also sets the `trailing.barTime` (which is `p_ivot.barTime` from Pinescript).
+        # Then, `updateTrailingExtremes` further refines `lastTopTime`/`lastBottomTime`.
+        while next_swing and next_swing.smc_swing_confirmation_time == ts:
+            if next_swing.smc_swing_type == "high":
+                # Pinescript: trailing.top := p_ivot.currentLevel
+                # Pinescript: trailing.barTime := p_ivot.barTime
+                trailing.top = next_swing.smc_swing_level
+                trailing.bar_time = next_swing.smc_swing_pivot_time
+                trailing.bar_index = df.index.get_loc(next_swing.smc_swing_pivot_time)
+            else: # "low"
+                # Pinescript: trailing.bottom := p_ivot.currentLevel
+                # Pinescript: trailing.barTime := p_ivot.barTime
+                trailing.bottom = next_swing.smc_swing_level
+                trailing.bar_time = next_swing.smc_swing_pivot_time
+                trailing.bar_index = df.index.get_loc(next_swing.smc_swing_pivot_time)
+
+            # Move to the next swing, ensuring we process all swings confirmed at this bar
+            next_swing = next(swing_iter, None)
+
+    return trailing
+# ── Premium & Discount Zones calculation ──────────────────────────────────
+# ── Premium & Discount Zones calculation ──────────────────────────────────
+def calculate_premium_discount_zones(
+    trailing_extremes: TrailingExtremes
+) -> dict:
+    """
+    Calculates the Premium, Equilibrium, and Discount Zone price levels
+    based on the current trailing high and low.
+    """
+    trailing_top = trailing_extremes.top
+    trailing_bottom = trailing_extremes.bottom
+
+    # Pinescript logic for zones, based on LuxAlgo's drawPremiumDiscountZones:
+    # Premium Zone calculations
+    smc_premium_top = trailing_top
+    smc_premium_bottom = 0.95 * trailing_top + 0.05 * trailing_bottom
+
+    # Equilibrium Zone calculations
+    equilibrium_level = (trailing_top + trailing_bottom) / 2 # This is Pinescript's equilibriumLevel
+    smc_equilibrium_top = 0.525 * trailing_top + 0.475 * trailing_bottom
+    smc_equilibrium_bottom = 0.525 * trailing_bottom + 0.475 * trailing_top
+
+    # Discount Zone calculations
+    smc_discount_top = 0.95 * trailing_bottom + 0.05 * trailing_top
+    smc_discount_bottom = trailing_bottom
+
+    return {
+        "smc_premium_top": smc_premium_top,
+        "smc_premium_bottom": smc_premium_bottom,
+        "smc_equilibrium_top": smc_equilibrium_top,
+        "smc_equilibrium_bottom": smc_equilibrium_bottom,
+        "smc_discount_top": smc_discount_top,
+        "smc_discount_bottom": smc_discount_bottom,
+        # We need this for plotting the starting point of the zone
+        "smc_zone_start_time": trailing_extremes.bar_time
+    }
+# ── full historical pivot-candidate series (no look-ahead) ───────────────────
+def compute_pivot_candidate_series(
+    df: pd.DataFrame,
+    length: int = DEFAULT_SWING_LENGTH,
+    interval: str | None = None,
+) -> pd.DataFrame:
+    # -----------------------------------------------------------------------
+    # 1)  Gather confirmed swings once, sorted by their *confirmation* bar.
+    #     (The swing is only “known” from that bar onward → no look-ahead.)
+    # -----------------------------------------------------------------------
+    swings_sorted = sorted(
+        detect_swing_points(df, length=length, interval=interval),
+        key=lambda s: s.smc_swing_confirmation_time,
+    )
+
+    # Pointer that walks the swing list exactly once during the candle loop
+    swing_ptr = 0
+    last_swing_type: Literal["high", "low"] | None = None
+
+    # Storage for the three output columns
+    times, levels, types = [], [], []
+
+    # -----------------------------------------------------------------------
+    # 2)  Step through EVERY candle.  At each close:
+    #     – If a swing just became confirmed, update `last_swing_type`.
+    #     – Decide whether we are in bullish or bearish “leg”.
+    #     – Within the last <length> visible candles find the extreme that
+    #       *could* turn into the next swing pivot.
+    # -----------------------------------------------------------------------
+    for idx in df.index:
+
+        # Catch up on newly-confirmed swings
+        while (
+            swing_ptr < len(swings_sorted)
+            and swings_sorted[swing_ptr].smc_swing_confirmation_time <= idx
+        ):
+            last_swing_type = swings_sorted[swing_ptr].smc_swing_type
+            swing_ptr += 1
+
+        # Until the first swing is confirmed, no candidate can be inferred
+        if last_swing_type is None:
+            times.append(pd.NaT)
+            levels.append(np.nan)
+            types.append(None)
+            continue
+
+        current_leg  = "bearish" if last_swing_type == "high" else "bullish"
+        need_extreme = "low" if current_leg == "bearish" else "high"
+
+        lookback = df.loc[:idx].tail(length)
+
+        # Handle both uppercase and lowercase column names
+        high_col = "high" if "high" in lookback.columns else "High" if "High" in lookback.columns else None
+        low_col = "low" if "low" in lookback.columns else "Low" if "Low" in lookback.columns else None
+
+        if high_col is None or low_col is None:
+            missing = []
+            if high_col is None: missing.append("high/High")
+            if low_col is None: missing.append("low/Low")
+            raise KeyError(f"Missing required columns: {', '.join(missing)}")
+
+        if need_extreme == "high":
+            extreme_idx = lookback[high_col].idxmax()
+            extreme_val = float(lookback.loc[extreme_idx, high_col])
+        else:
+            extreme_idx = lookback[low_col].idxmin()
+            extreme_val = float(lookback.loc[extreme_idx, low_col])
+
+        times.append(pd.Timestamp(extreme_idx))
+        levels.append(extreme_val)
+        types.append(need_extreme)
+
+    return pd.DataFrame(
+        {
+            "smc_last_pivot_candidate_time":  times,
+            "smc_last_pivot_candidate_level": levels,
+            "smc_last_pivot_candidate_type":  types,
+        },
+        index=df.index,
+    )
+# ── Sessions & Kill-Zones Calculation ──────────────────────────────────────
+def compute_sessions_and_killzones(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Computes session and kill-zone flags, and time-since/to-close metrics
+    for each bar in the DataFrame based on UTC times.
+    """
+    results = pd.DataFrame(index=df.index)
+
+    # Convert DataFrame index to UTC if not already
+    current_index = df.index
+    if current_index.tz is None:
+        # If not timezone-aware, localize to UTC
+        current_index = current_index.tz_localize('UTC')
+    else:
+        # If timezone-aware, convert to UTC (this handles cases where it's already UTC or a different TZ)
+        current_index = current_index.tz_convert('UTC')
+
+    # Initialize all flags to 0
+    results['sess_asia_flag']    = 0
+    results['sess_london_flag']  = 0
+    results['sess_ny_flag']      = 0
+    results['kz_london_flag']    = 0
+    results['kz_ny_flag']        = 0
+    results['friday_flag']       = 0
+
+    # Initialize bar counts to NaN
+    results['bars_since_session_open'] = np.nan
+    results['bars_to_session_close']   = np.nan
+    results['bars_since_kz_start']     = np.nan
+    results['bars_to_kz_end']          = np.nan
+    results['bars_since_midnight_utc'] = np.nan
+
+    # Determine interval in minutes for bar counting
+    if len(df) > 1:
+        interval_minutes = (df.index[1] - df.index[0]).total_seconds() / 60
+    else:
+        interval_minutes = 1 # Default to 1 minute if only one bar
+
+    for i, ts in enumerate(current_index):
+        # Time components in UTC
+        hour_utc = ts.hour
+        weekday_utc = ts.weekday()  # Monday=0, Sunday=6
+
+        # Check for weekends (Saturday=5, Sunday=6)
+        is_weekend = (weekday_utc == 5) or (weekday_utc == 6)
+
+        # Friday Flag (remains independent)
+        if weekday_utc == 4:  # Friday
+            results.loc[ts, 'friday_flag'] = 1
+
+        # Initialize flags and bar counts for the current bar
+        # These will be set to 0 or NaN if it's a weekend
+        results.loc[ts, 'sess_asia_flag'] = 0
+        results.loc[ts, 'sess_london_flag'] = 0
+        results.loc[ts, 'sess_ny_flag'] = 0
+        results.loc[ts, 'kz_london_flag'] = 0
+        results.loc[ts, 'kz_ny_flag'] = 0
+        results.loc[ts, 'bars_since_session_open'] = np.nan
+        results.loc[ts, 'bars_to_session_close'] = np.nan
+        results.loc[ts, 'bars_since_kz_start'] = np.nan
+        results.loc[ts, 'bars_to_kz_end'] = np.nan
+
+        # Only calculate session/kill zone details if it's a weekday
+        if not is_weekend:
+            # Sessions
+            is_asia = (hour_utc >= ASIA_SESSION_START_HOUR_UTC) or (hour_utc < ASIA_SESSION_END_HOUR_UTC)
+            is_london = (hour_utc >= LONDON_SESSION_START_HOUR_UTC) and (hour_utc < LONDON_SESSION_END_HOUR_UTC)
+            is_ny = (hour_utc >= NY_SESSION_START_HOUR_UTC) and (hour_utc < NY_SESSION_END_HOUR_UTC)
+
+            current_session_flag_set = False
+            if is_asia:
+                results.loc[ts, 'sess_asia_flag'] = 1
+                current_session_flag_set = True
+            if is_london:
+                results.loc[ts, 'sess_london_flag'] = 1
+                current_session_flag_set = True
+            if is_ny:
+                results.loc[ts, 'sess_ny_flag'] = 1
+                current_session_flag_set = True
+
+            # Kill Zones
+            is_kz_london = (hour_utc >= LONDON_KILL_ZONE_START_HOUR_UTC) and (hour_utc < LONDON_KILL_ZONE_END_HOUR_UTC)
+            is_kz_ny = (hour_utc >= NY_KILL_ZONE_START_HOUR_UTC) and (hour_utc < NY_KILL_ZONE_END_HOUR_UTC)
+
+            current_kz_flag_set = False
+            if is_kz_london:
+                results.loc[ts, 'kz_london_flag'] = 1
+                current_kz_flag_set = True
+            if is_kz_ny:
+                results.loc[ts, 'kz_ny_flag'] = 1
+                current_kz_flag_set = True
+
+            # Calculate bars_since_session_open and bars_to_session_close
+            if current_session_flag_set:
+                session_start_hour = -1
+                session_end_hour = -1
+                if is_asia:
+                    session_start_hour = ASIA_SESSION_START_HOUR_UTC
+                    session_end_hour = ASIA_SESSION_END_HOUR_UTC
+                elif is_london:
+                    session_start_hour = LONDON_SESSION_START_HOUR_UTC
+                    session_end_hour = LONDON_SESSION_END_HOUR_UTC
+                elif is_ny:
+                    session_start_hour = NY_SESSION_START_HOUR_UTC
+                    session_end_hour = NY_SESSION_END_HOUR_UTC
+
+                # Calculate bars_since_session_open
+                if session_start_hour > session_end_hour and hour_utc >= session_start_hour:  # Asia session, current day start
+                    time_since_open_minutes = (hour_utc - session_start_hour) * 60 + ts.minute
+                elif session_start_hour > session_end_hour and hour_utc < session_end_hour:  # Asia session, next day end
+                    time_since_open_minutes = (24 - session_start_hour) * 60 + (hour_utc * 60 + ts.minute)
+                else:  # Standard session
+                    time_since_open_minutes = (hour_utc - session_start_hour) * 60 + ts.minute
+
+                results.loc[ts, 'bars_since_session_open'] = time_since_open_minutes / interval_minutes
+
+                # Calculate bars_to_session_close
+                if session_start_hour > session_end_hour and hour_utc >= session_start_hour:  # Asia session, current day start
+                    time_to_close_minutes = (24 - hour_utc - 1) * 60 + (60 - ts.minute) + (session_end_hour * 60)
+                elif session_start_hour > session_end_hour and hour_utc < session_end_hour:  # Asia session, next day end
+                    time_to_close_minutes = (session_end_hour - hour_utc - 1) * 60 + (60 - ts.minute)
+                else:  # Standard session
+                    time_to_close_minutes = (session_end_hour - hour_utc - 1) * 60 + (60 - ts.minute)
+
+                results.loc[ts, 'bars_to_session_close'] = max(0, time_to_close_minutes / interval_minutes)
+
+            # Calculate bars_since_kz_start and bars_to_kz_end
+            if current_kz_flag_set:
+                kz_start_hour = -1
+                kz_end_hour = -1
+                if is_kz_london:
+                    kz_start_hour = LONDON_KILL_ZONE_START_HOUR_UTC
+                    kz_end_hour = LONDON_KILL_ZONE_END_HOUR_UTC
+                elif is_kz_ny:
+                    kz_start_hour = NY_KILL_ZONE_START_HOUR_UTC
+                    kz_end_hour = NY_KILL_ZONE_END_HOUR_UTC
+
+                time_since_kz_start_minutes = (hour_utc - kz_start_hour) * 60 + ts.minute
+                results.loc[ts, 'bars_since_kz_start'] = time_since_kz_start_minutes / interval_minutes
+
+                time_to_kz_end_minutes = (kz_end_hour - hour_utc - 1) * 60 + (60 - ts.minute)
+                results.loc[ts, 'bars_to_kz_end'] = max(0, time_to_kz_end_minutes / interval_minutes)
+
+        # This calculation is independent of weekends as midnight still occurs.
+        minutes_since_midnight = ts.hour * 60 + ts.minute
+        results.loc[ts, 'bars_since_midnight_utc'] = minutes_since_midnight / interval_minutes
+
+    return results.astype(float)
+
+def calculate_smc_indicators(
+    df: pd.DataFrame,
+    timeframe: str = "1HRS",
+    use_internal_swing_length: bool = False
+) -> pd.DataFrame:
+    """
+    Main entry point for calculating all SMC indicators on a DataFrame.
+
+    Args:
+        df (pd.DataFrame): DataFrame with OHLCV data
+        timeframe (str): Timeframe identifier (e.g., "15MIN", "1HRS", "4HRS", "1DAY")
+        use_internal_swing_length (bool): If True, use the internal swing length (10) instead of the timeframe-specific one
+
+    Returns:
+        pd.DataFrame: DataFrame with all SMC indicators added
+    """
+    if df.empty:
+        return df.copy()
+
+    # Make a copy to avoid modifying the original DataFrame
+    result_df = df.copy()
+
+    # Determine the swing length to use
+    if use_internal_swing_length:
+        swing_length = SWING_LENGTH_INTERNAL
+    else:
+        swing_length = SWING_LENGTH_BY_TIMEFRAME.get(timeframe, DEFAULT_SWING_LENGTH)
+
+    print(f"Calculating SMC indicators for timeframe {timeframe} with swing length {swing_length}")
+
+    # Step 1: Detect swing points
+    swings = detect_swing_points(result_df, length=swing_length, interval=timeframe)
+
+    # Create columns for swing points
+    swing_columns = {
+        'smc_swing_id': None,
+        'smc_swing_type': None,
+        'smc_swing_interval': None,
+        'smc_swing_pivot_time': None,
+        'smc_swing_level': None,
+        'smc_swing_confirmation_time': None
+    }
+
+    for col in swing_columns:
+        result_df[col] = None
+
+    # Add swing points to the DataFrame
+    for swing in swings:
+        # Find the index of the confirmation time
+        try:
+            idx = result_df.index.get_loc(swing.smc_swing_confirmation_time)
+            # Add swing data at the confirmation time
+            result_df.loc[swing.smc_swing_confirmation_time, 'smc_swing_id'] = swing.smc_swing_id
+            result_df.loc[swing.smc_swing_confirmation_time, 'smc_swing_type'] = swing.smc_swing_type
+            result_df.loc[swing.smc_swing_confirmation_time, 'smc_swing_interval'] = swing.smc_swing_interval
+            result_df.loc[swing.smc_swing_confirmation_time, 'smc_swing_pivot_time'] = swing.smc_swing_pivot_time
+            result_df.loc[swing.smc_swing_confirmation_time, 'smc_swing_level'] = swing.smc_swing_level
+            result_df.loc[swing.smc_swing_confirmation_time, 'smc_swing_confirmation_time'] = swing.smc_swing_confirmation_time
+        except KeyError:
+            # Skip if the confirmation time is not in the DataFrame
+            continue
+
+    # Step 2: Get the last pivot candidate
+    pivot_candidate_df = compute_pivot_candidate_series(result_df, length=swing_length, interval=timeframe)
+
+    # Add pivot candidate columns to the result DataFrame
+    for col in pivot_candidate_df.columns:
+        result_df[col] = pivot_candidate_df[col]
+
+    # Step 3: Detect structure events (BOS/CHOCH)
+    events = detect_structure_events(result_df, swings, interval=timeframe)
+
+    # Create columns for structure events
+    event_columns = {
+        'smc_event_id': None,
+        'smc_event_created': None,
+        'smc_event_type': None,
+        'smc_event_direction': None,
+        'smc_event_interval': None,
+        'smc_event_price': None,
+        'smc_event_break_time': None,
+        'smc_event_swing_point': None
+    }
+
+    for col in event_columns:
+        result_df[col] = None
+
+    # Add structure events to the DataFrame
+    for event in events:
+        # Find the index of the event creation time
+        try:
+            idx = result_df.index.get_loc(event.smc_event_created)
+            # Add event data at the creation time
+            result_df.loc[event.smc_event_created, 'smc_event_id'] = event.smc_event_id
+            result_df.loc[event.smc_event_created, 'smc_event_created'] = event.smc_event_created
+            result_df.loc[event.smc_event_created, 'smc_event_type'] = event.smc_event_type
+            result_df.loc[event.smc_event_created, 'smc_event_direction'] = event.smc_event_direction
+            result_df.loc[event.smc_event_created, 'smc_event_interval'] = event.smc_event_interval
+            result_df.loc[event.smc_event_created, 'smc_event_price'] = event.smc_event_price
+            result_df.loc[event.smc_event_created, 'smc_event_break_time'] = event.smc_event_break_time
+            result_df.loc[event.smc_event_created, 'smc_event_swing_point'] = event.smc_event_swing_point
+        except KeyError:
+            # Skip if the event creation time is not in the DataFrame
+            continue
+
+    # Step 4: Detect Fair Value Gaps (FVGs)
+    fvgs = detect_fvgs(result_df, interval=timeframe)
+
+    # Mark FVG mitigations
+    mark_fvg_mitigations(result_df, fvgs)
+
+    # Create columns for FVGs
+    fvg_columns = {
+        'smc_fvg_id': None,
+        'smc_fvg_created_time': None,
+        'smc_fvg_direction': None,
+        'smc_fvg_interval': None,
+        'smc_fvg_top': None,
+        'smc_fvg_bottom': None,
+        'smc_fvg_status': None,
+        'smc_fvg_mitigated_time': None,
+        'smc_fvg_size': None,
+        'smc_fvg_left_time': None
+    }
+
+    for col in fvg_columns:
+        result_df[col] = None
+
+    # Add FVGs to the DataFrame
+    for fvg in fvgs:
+        # Find the index of the FVG creation time
+        try:
+            idx = result_df.index.get_loc(fvg.smc_fvg_created_time)
+            # Add FVG data at the creation time
+            result_df.loc[fvg.smc_fvg_created_time, 'smc_fvg_id'] = fvg.smc_fvg_id
+            result_df.loc[fvg.smc_fvg_created_time, 'smc_fvg_created_time'] = fvg.smc_fvg_created_time
+            result_df.loc[fvg.smc_fvg_created_time, 'smc_fvg_direction'] = fvg.smc_fvg_direction
+            result_df.loc[fvg.smc_fvg_created_time, 'smc_fvg_interval'] = fvg.smc_fvg_interval
+            result_df.loc[fvg.smc_fvg_created_time, 'smc_fvg_top'] = fvg.smc_fvg_top
+            result_df.loc[fvg.smc_fvg_created_time, 'smc_fvg_bottom'] = fvg.smc_fvg_bottom
+            result_df.loc[fvg.smc_fvg_created_time, 'smc_fvg_status'] = fvg.smc_fvg_status
+            result_df.loc[fvg.smc_fvg_created_time, 'smc_fvg_mitigated_time'] = fvg.smc_fvg_mitigated_time
+            result_df.loc[fvg.smc_fvg_created_time, 'smc_fvg_size'] = fvg.smc_fvg_size
+            result_df.loc[fvg.smc_fvg_created_time, 'smc_fvg_left_time'] = fvg.smc_fvg_left_time
+        except KeyError:
+            # Skip if the FVG creation time is not in the DataFrame
+            continue
+
+    # Step 5: Detect Order Blocks
+    order_blocks = detect_order_blocks(result_df, swings, events, interval=timeframe)
+
+    # Mark Order Block mitigations
+    mark_order_block_mitigations(result_df, order_blocks)
+
+    # Create columns for Order Blocks
+    ob_columns = {
+        'smc_ob_id': None,
+        'smc_ob_created_time': None,
+        'smc_ob_direction': None,
+        'smc_ob_interval': None,
+        'smc_ob_top': None,
+        'smc_ob_bottom': None,
+        'smc_ob_status': None,
+        'smc_ob_mitigated_time': None,
+        'smc_ob_strength': None,
+        'smc_ob_size': None,
+        'smc_ob_left_time': None
+    }
+
+    for col in ob_columns:
+        result_df[col] = None
+
+    # Add Order Blocks to the DataFrame
+    for ob in order_blocks:
+        # Find the index of the Order Block creation time
+        try:
+            idx = result_df.index.get_loc(ob.smc_ob_created_time)
+            # Add Order Block data at the creation time
+            result_df.loc[ob.smc_ob_created_time, 'smc_ob_id'] = ob.smc_ob_id
+            result_df.loc[ob.smc_ob_created_time, 'smc_ob_created_time'] = ob.smc_ob_created_time
+            result_df.loc[ob.smc_ob_created_time, 'smc_ob_direction'] = ob.smc_ob_direction
+            result_df.loc[ob.smc_ob_created_time, 'smc_ob_interval'] = ob.smc_ob_interval
+            result_df.loc[ob.smc_ob_created_time, 'smc_ob_top'] = ob.smc_ob_top
+            result_df.loc[ob.smc_ob_created_time, 'smc_ob_bottom'] = ob.smc_ob_bottom
+            result_df.loc[ob.smc_ob_created_time, 'smc_ob_status'] = ob.smc_ob_status
+            result_df.loc[ob.smc_ob_created_time, 'smc_ob_mitigated_time'] = ob.smc_ob_mitigated_time
+            result_df.loc[ob.smc_ob_created_time, 'smc_ob_strength'] = ob.smc_ob_strength
+            result_df.loc[ob.smc_ob_created_time, 'smc_ob_size'] = ob.smc_ob_size
+            result_df.loc[ob.smc_ob_created_time, 'smc_ob_left_time'] = ob.smc_ob_left_time
+        except KeyError:
+            # Skip if the Order Block creation time is not in the DataFrame
+            continue
+
+    # Step 6: Calculate Premium & Discount Zones
+    # Create columns for Premium & Discount Zones
+    pd_columns = {
+        'smc_premium_top': None,
+        'smc_premium_bottom': None,
+        'smc_equilibrium_top': None,
+        'smc_equilibrium_bottom': None,
+        'smc_discount_top': None,
+        'smc_discount_bottom': None
+    }
+
+    for col in pd_columns:
+        result_df[col] = None
+
+    # We need to calculate the premium/discount zones for each candle
+    # First, we'll create a function to calculate the zones for a specific set of trailing extremes
+    def calculate_zones_for_trailing_extremes(top, bottom):
+        if pd.isna(top) or pd.isna(bottom):
+            return {col: None for col in pd_columns}
+
+        # Premium Zone calculations
+        smc_premium_top = top
+        smc_premium_bottom = 0.95 * top + 0.05 * bottom
+
+        # Equilibrium Zone calculations
+        equilibrium_level = (top + bottom) / 2
+        smc_equilibrium_top = 0.525 * top + 0.475 * bottom
+        smc_equilibrium_bottom = 0.525 * bottom + 0.475 * top
+
+        # Discount Zone calculations
+        smc_discount_top = 0.95 * bottom + 0.05 * top
+        smc_discount_bottom = bottom
+
+        return {
+            'smc_premium_top': smc_premium_top,
+            'smc_premium_bottom': smc_premium_bottom,
+            'smc_equilibrium_top': smc_equilibrium_top,
+            'smc_equilibrium_bottom': smc_equilibrium_bottom,
+            'smc_discount_top': smc_discount_top,
+            'smc_discount_bottom': smc_discount_bottom
+        }
+
+    # Now we'll iterate through the dataframe and calculate the zones for each candle
+    # We'll track the trailing extremes as we go
+    current_top = None
+    current_bottom = None
+
+    # Sort swings by confirmation time to process them in order
+    sorted_swings = sorted(swings, key=lambda s: s.smc_swing_confirmation_time)
+    swing_iter = iter(sorted_swings)
+    next_swing = next(swing_iter, None)
+
+    # Initialize with the first bar's high/low if no swings
+    if not sorted_swings and not result_df.empty:
+        high_col = "high" if "high" in result_df.columns else "High"
+        low_col = "low" if "low" in result_df.columns else "Low"
+        current_top = result_df[high_col].iloc[0]
+        current_bottom = result_df[low_col].iloc[0]
+
+    # Process each candle
+    for ts, row in result_df.iterrows():
+        # Update trailing extremes based on confirmed swings
+        while next_swing and next_swing.smc_swing_confirmation_time <= ts:
+            if next_swing.smc_swing_type == "high":
+                current_top = next_swing.smc_swing_level
+            else:  # "low"
+                current_bottom = next_swing.smc_swing_level
+            next_swing = next(swing_iter, None)
+
+        # Update trailing extremes based on current candle's high/low
+        high_col = "high" if "high" in result_df.columns else "High"
+        low_col = "low" if "low" in result_df.columns else "Low"
+        current_high = row[high_col]
+        current_low = row[low_col]
+
+        if current_top is None or (not pd.isna(current_high) and current_high > current_top):
+            current_top = current_high
+
+        if current_bottom is None or (not pd.isna(current_low) and current_low < current_bottom):
+            current_bottom = current_low
+
+        # Calculate zones for this candle
+        zones = calculate_zones_for_trailing_extremes(current_top, current_bottom)
+
+        # Add zones to the dataframe
+        for col, value in zones.items():
+            result_df.loc[ts, col] = value
+
+    # Step 7: Calculate Sessions & Kill Zones (only for 15MIN timeframe)
+    # Sessions datapoints are only required on the 15m interval
+    # (because they are essentially the same for 1h, 4h, and 1d timeframes)
+    if timeframe == "15MIN":
+        sessions_df = compute_sessions_and_killzones(result_df)
+
+        # Add Sessions & Kill Zones columns to the result DataFrame
+        for col in sessions_df.columns:
+            result_df[col] = sessions_df[col]
+
+    return result_df

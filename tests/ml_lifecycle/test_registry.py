@@ -1,7 +1,7 @@
 import sys
 import types
 from types import SimpleNamespace
-from typing import Dict, List
+from typing import Dict
 
 import pytest
 
@@ -32,7 +32,7 @@ sys.modules.setdefault("mlflow", mlflow_stub)
 sys.modules.setdefault("mlflow.tracking", mlflow_tracking_stub)
 
 # We will import the manager under test
-from unicorn_wealth.ml_lifecycle.registry import ModelRegistryManager  # noqa: E402
+from ml_lifecycle.registry import ModelRegistryManager  # noqa: E402
 
 
 def _make_run(run_id: str, run_name: str):
@@ -51,9 +51,7 @@ def _make_model_version(version: str):
 def mock_mlflow_client(mocker):
     """Patch MlflowClient in the registry module so instantiation uses a mock."""
     client_mock = mocker.MagicMock()
-    mocker.patch(
-        "unicorn_wealth.ml_lifecycle.registry.MlflowClient", return_value=client_mock
-    )
+    mocker.patch("ml_lifecycle.registry.MlflowClient", return_value=client_mock)
     return client_mock
 
 
@@ -73,7 +71,7 @@ def test_register_models(mocker, mock_mlflow_client):
 
     # Arrange: mock top-level mlflow.register_model to return versions
     register_model_mock = mocker.patch(
-        "unicorn_wealth.ml_lifecycle.registry.mlflow.register_model",
+        "ml_lifecycle.registry.mlflow.register_model",
         side_effect=[
             _make_model_version("1"),
             _make_model_version("2"),
@@ -112,15 +110,8 @@ def test_promote_challenger_ensemble(mocker, mock_mlflow_client):
         _make_model_version("30"),
     ]
 
-    # Fake existing production versions
-    prod_versions = [
-        _make_model_version("100"),
-    ]
-
-    def _get_latest_versions(name: str, stages: List[str]):  # noqa: ARG001
-        return prod_versions
-
-    mock_mlflow_client.get_latest_versions.side_effect = _get_latest_versions
+    # No existing alias mapping
+    mock_mlflow_client.get_registered_model.return_value = SimpleNamespace(aliases={})
 
     mgr = ModelRegistryManager()
 
@@ -133,37 +124,26 @@ def test_promote_challenger_ensemble(mocker, mock_mlflow_client):
     # Act
     mgr.promote_challenger_ensemble(new_versions)
 
-    # Assert: we expect 6 transitions (3 archive + 3 promote)
-    calls = mock_mlflow_client.transition_model_version_stage.call_args_list
-    assert len(calls) == 6
+    # Assert: expect alias set operations for each model
+    calls = mock_mlflow_client.set_registered_model_alias.call_args_list
+    assert len(calls) == 3
 
-    # Validate that for each model we first archived existing, then promoted new
-    # Since the manager processes names in order 1h, 4h, 8h, check sequence
     expected_seq = [
-        # archive current production
-        mocker.call(name="uw-catboost-1h", version="100", stage="Archived"),
-        mocker.call(name="uw-catboost-4h", version="100", stage="Archived"),
-        mocker.call(name="uw-catboost-8h", version="100", stage="Archived"),
-        # promote new versions
         mocker.call(
             name="uw-catboost-1h",
+            alias="production",
             version=str(new_versions["uw-catboost-1h"]),
-            stage="Production",
-            archive_existing_versions=False,
         ),
         mocker.call(
             name="uw-catboost-4h",
+            alias="production",
             version=str(new_versions["uw-catboost-4h"]),
-            stage="Production",
-            archive_existing_versions=False,
         ),
         mocker.call(
             name="uw-catboost-8h",
+            alias="production",
             version=str(new_versions["uw-catboost-8h"]),
-            stage="Production",
-            archive_existing_versions=False,
         ),
     ]
 
-    # The exact order should match implementation; assert sequence equality
     assert calls == expected_seq

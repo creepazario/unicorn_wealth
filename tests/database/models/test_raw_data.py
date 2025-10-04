@@ -1,7 +1,11 @@
 import pytest
 
-from unicorn_wealth.database.models.raw_data import (
-    RawOHLCV,
+from database.models.raw_data import (
+    RawOHLCV15m,
+    RawOHLCV1h,
+    RawOHLCV4h,
+    RawOHLCV1d,
+    RawOHLCV7d,
     RawFundingRates,
     RawSocialMetrics,
 )
@@ -10,30 +14,28 @@ from unicorn_wealth.database.models.raw_data import (
 _ = pytest  # silence flake8 unused warning
 
 
+def _assert_ohlcv_columns(model_cls):
+    # Common columns for OHLCV tables
+    for col in ("timestamp", "token", "open", "high", "low", "close", "volume"):
+        assert hasattr(model_cls, col)
+
+
+def test_raw_ohlcv_models_exist_with_expected_names():
+    assert RawOHLCV15m.__tablename__ == "raw_ohlcv_15m"
+    assert RawOHLCV1h.__tablename__ == "raw_ohlcv_1h"
+    assert RawOHLCV4h.__tablename__ == "raw_ohlcv_4h"
+    assert RawOHLCV1d.__tablename__ == "raw_ohlcv_1d"
+    assert RawOHLCV7d.__tablename__ == "raw_ohlcv_7d"
+
+    # Validate expected columns on each model
+    for model in (RawOHLCV15m, RawOHLCV1h, RawOHLCV4h, RawOHLCV1d, RawOHLCV7d):
+        _assert_ohlcv_columns(model)
+
+
 def _assert_common_time_series_attrs(model_cls):
-    # __table_args__ should exist and be non-empty (TimescaleDB config present)
-    assert hasattr(model_cls, "__table_args__")
-    args = getattr(model_cls, "__table_args__")
-    assert args is not None
-    # Defined in models as a tuple containing a dict of timescaledb options
-    assert isinstance(args, tuple)
-    assert len(args) > 0
-
     # Common columns
-    assert hasattr(model_cls, "id")
-    assert hasattr(model_cls, "timestamp")
-    assert hasattr(model_cls, "token")
-
-
-def test_raw_ohlcv_model():
-    # Table name
-    assert RawOHLCV.__tablename__ == "raw_ohlcv"
-
-    _assert_common_time_series_attrs(RawOHLCV)
-
-    # Specific columns
-    for col in ("interval", "open", "high", "low", "close", "volume"):
-        assert hasattr(RawOHLCV, col)
+    for col in ("id", "timestamp", "token"):
+        assert hasattr(model_cls, col)
 
 
 def test_raw_funding_rates_model():

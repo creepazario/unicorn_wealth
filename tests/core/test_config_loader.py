@@ -1,16 +1,8 @@
 import builtins
 import os
-import sys
-from pathlib import Path
 from unittest.mock import mock_open
 
-# Ensure the parent of the project root is on sys.path so that
-# `unicorn_wealth.core.config_loader` can be imported.
-THIS_FILE = Path(__file__).resolve()
-PARENT_OF_PROJECT = THIS_FILE.parents[3]  # .../home/ryan
-sys.path.insert(0, str(PARENT_OF_PROJECT))
-
-from unicorn_wealth.core.config_loader import load_settings  # noqa: E402
+from core.config_loader import load_settings
 
 
 def test_load_settings_successfully(mocker):
@@ -26,8 +18,8 @@ def test_load_settings_successfully(mocker):
             'TELEGRAM_API_ID="x"',
             'TELEGRAM_API_HASH="x"',
             'TELEGRAM_BOT_TOKEN="x"',
-            'TELEGRAM_ADMIN_CHANNEL_ID="x"',
-            'TELEGRAM_TRADE_CHANNEL_ID="x"',
+            'TELEGRAM_ADMIN_CHANNEL_ID="-1001234567890"',
+            'TELEGRAM_TRADE_CHANNEL_ID="-1009876543210"',
             # Binance (asserted below)
             'BINANCE_UNICORN_API_KEY="test_binance_key"',
             'BINANCE_UNICORN_API_SECRET="test_binance_secret"',

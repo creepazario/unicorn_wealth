@@ -22,10 +22,7 @@ try:  # optional flavor registration; do not fail tests if missing
 except Exception:  # pragma: no cover - optional dependency not available in CI/tests
     pass
 
-try:  # Prefer relative import when available
-    from .data_preparer import PreparedData
-except Exception:  # pragma: no cover - fallback for direct execution context
-    from unicorn_wealth.ml_lifecycle.data_preparer import PreparedData  # type: ignore
+from ml_lifecycle.data_preparer import PreparedData
 
 
 __all__ = ["ModelTrainer"]
@@ -155,7 +152,11 @@ class ModelTrainer:
                 "val_accuracy": float("nan"),
                 "val_f1_macro": float("nan"),
             }
-            model.set_params(_used_task_type=used_task_type)  # type: ignore[attr-defined]
+            # Do not modify params of a fitted model; store compute backend as attribute
+            try:
+                setattr(model, "_used_task_type", used_task_type)
+            except Exception:
+                pass
             return _TrainResult(
                 model=model, metrics=metrics, used_task_type=used_task_type
             )
@@ -181,7 +182,11 @@ class ModelTrainer:
         }
 
         # Attach a training param indicating actual compute backend used
-        model.set_params(_used_task_type=used_task_type)  # type: ignore[attr-defined]
+        # Do not modify params of a fitted model; instead, store as attribute for logging
+        try:
+            setattr(model, "_used_task_type", used_task_type)
+        except Exception:
+            pass
 
         return _TrainResult(model=model, metrics=metrics, used_task_type=used_task_type)
 
@@ -222,7 +227,7 @@ class ModelTrainer:
                         params_dict = {}
                     # Ensure actual compute backend is logged
                     params_dict = dict(params_dict)
-                    used_task_type = model.get_params().get("_used_task_type")
+                    used_task_type = getattr(model, "_used_task_type", None)
                     if used_task_type:
                         params_dict["used_task_type"] = used_task_type
                     if params_dict:

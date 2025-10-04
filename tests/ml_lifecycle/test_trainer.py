@@ -5,17 +5,13 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 
-try:
-    from unicorn_wealth.ml_lifecycle.data_preparer import PreparedData
-    from unicorn_wealth.ml_lifecycle.trainer import ModelTrainer
-except Exception:  # pragma: no cover - fallback for direct execution context
-    from ml_lifecycle.data_preparer import PreparedData  # type: ignore
-    from ml_lifecycle.trainer import ModelTrainer  # type: ignore
+from ml_lifecycle.data_preparer import PreparedData
+from ml_lifecycle.trainer import ModelTrainer
 
 
 def test_train_models_orchestration(mocker):
     # Mock mlflow used inside the trainer module
-    mlflow_mock = mocker.patch("unicorn_wealth.ml_lifecycle.trainer.mlflow")
+    mlflow_mock = mocker.patch("ml_lifecycle.trainer.mlflow")
 
     # start_run should behave as a context manager
     mlflow_mock.start_run.return_value.__enter__.return_value = SimpleNamespace()
@@ -26,7 +22,7 @@ def test_train_models_orchestration(mocker):
     mlflow_mock.catboost.log_model = mocker.MagicMock()
 
     # Mock CatBoostClassifier constructor and instance methods
-    cb_cls_mock = mocker.patch("unicorn_wealth.ml_lifecycle.trainer.CatBoostClassifier")
+    cb_cls_mock = mocker.patch("ml_lifecycle.trainer.CatBoostClassifier")
     cb_instance = mocker.MagicMock()
 
     # Configure instance behavior

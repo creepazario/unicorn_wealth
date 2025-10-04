@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict
 
-from ..core.config_loader import Settings
+from core.config_loader import Settings
 
 
 class JsonFormatter(logging.Formatter):
@@ -79,5 +79,9 @@ def setup_logger(settings: Settings) -> logging.Logger:
     # Add handlers
     logger.addHandler(file_handler)
     logger.addHandler(stream_handler)
+
+    # Set higher log levels for noisy third-party libraries
+    logging.getLogger("websockets").setLevel(logging.INFO)
+    logging.getLogger("telethon").setLevel(logging.INFO)
 
     return logger

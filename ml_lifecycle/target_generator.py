@@ -27,14 +27,12 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+import logging
 
-try:  # Prefer relative import when available
-    from ..config import MASTER_TOKEN_LIST
-    from ..core.dataframe_registry import DataFrameRegistry
-except Exception:  # pragma: no cover - fallback for direct execution context
-    from unicorn_wealth.config import MASTER_TOKEN_LIST  # type: ignore
-    from unicorn_wealth.core.dataframe_registry import DataFrameRegistry  # type: ignore
+from config import MASTER_TOKEN_LIST
+from core.dataframe_registry import DataFrameRegistry
 
+logger = logging.getLogger(__name__)
 
 __all__ = ["TargetGenerator"]
 
@@ -72,9 +70,13 @@ def _ensure_timestamp_column(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _epoch_seconds(ts: pd.Series) -> pd.Series:
-    """Convert a timestamp-like series to Unix epoch seconds (int)."""
+    """Convert a timestamp-like series to Unix epoch seconds (int).
+
+    Replaces deprecated Series.view with astype for dtype conversions.
+    """
     dt = pd.to_datetime(ts, utc=True, errors="coerce")
-    return (dt.view("int64") // 10**9).astype("int64")
+    # Convert to int64 nanoseconds using astype and then to seconds
+    return (dt.astype("int64") // 10**9).astype("int64")
 
 
 def _build_future_matrix(arr: np.ndarray, horizon: int) -> np.ndarray:
@@ -151,9 +153,18 @@ class TargetGenerator:
         with 'timestamp' and six barrier columns.
         """
         df = _ensure_timestamp_column(ohlcv_df)
+        logger.debug(
+            "_calculate_barriers: input OHLCV shape: %s",
+            None if df is None else df.shape,
+        )
         required = {"high", "low", "close"}
         missing = [c for c in required if c not in df.columns]
         if missing:
+            logger.error(
+                "_calculate_barriers: missing required columns: %s; columns present: %s",
+                missing,
+                list(df.columns),
+            )
             raise KeyError(f"OHLCV DataFrame missing required columns: {missing}")
 
         # Compute ATR (Wilder RMA, period=14)
@@ -182,6 +193,7 @@ class TargetGenerator:
                 "barrier_bear_invalid": (close + atr * 0.75).values,
             }
         )
+        logger.debug("_calculate_barriers: output barriers shape: %s", out.shape)
         return out
 
     @staticmethod
@@ -204,9 +216,35 @@ class TargetGenerator:
         pd.DataFrame
             DataFrame with ['timestamp', 'target_prediction'] for the given horizon.
         """
+        logger.debug("_generate_labels: look_forward_period=%s", look_forward_period)
         price = _ensure_timestamp_column(ohlcv_df)
+        logger.debug(
+            "_generate_labels: price shape: %s, barriers shape: %s",
+            None if price is None else price.shape,
+            None if barriers_df is None else barriers_df.shape,
+        )
+        # Enforce integer UNIX timestamps for merge to avoid timezone mismatches
+        price["timestamp"] = pd.to_datetime(
+            price["timestamp"], utc=True, errors="coerce"
+        )
+        barriers_df["timestamp"] = pd.to_datetime(
+            barriers_df["timestamp"], utc=True, errors="coerce"
+        )
+        price["timestamp"] = price["timestamp"].apply(lambda x: int(x.timestamp()))
+        barriers_df["timestamp"] = barriers_df["timestamp"].apply(
+            lambda x: int(x.timestamp())
+        )
         # Merge to ensure alignment on timestamp
         df = price.merge(barriers_df, on="timestamp", how="inner")
+        logger.debug("_generate_labels: merged shape: %s", df.shape)
+
+        if df.empty:
+            logger.warning(
+                "_generate_labels: merged DataFrame empty; returning empty labels"
+            )
+            return df.loc[:, ["timestamp"]].assign(
+                target_prediction=pd.Series([], dtype="int8")
+            )
 
         H = _build_future_matrix(
             df["high"].astype(float).to_numpy(),
@@ -216,9 +254,11 @@ class TargetGenerator:
             df["low"].astype(float).to_numpy(),
             look_forward_period,
         )
+        logger.debug(
+            "_generate_labels: future matrices built: H=%s, L=%s", H.shape, L.shape
+        )
 
         # Extract barriers as numpy arrays aligned with df's order
-        # Ensure same order as price by re-merging indices
         b = df
         sbull = b["barrier_strong_bull"].to_numpy()
         bull = b["barrier_bull"].to_numpy()
@@ -260,12 +300,26 @@ class TargetGenerator:
 
         out = df.loc[:, ["timestamp"]].copy()
         out["target_prediction"] = label.astype("int8")
+        counts = (
+            pd.Series(out["target_prediction"]).value_counts(dropna=False).to_dict()
+        )
+        logger.debug(
+            "_generate_labels: processed rows=%s; label counts=%s", len(out), counts
+        )
         return out
 
-    async def generate_targets(self) -> None:
-        """Orchestrate target label generation for 1h, 4h, 8h horizons.
+    async def generate_targets(
+        self,
+        feature_df: pd.DataFrame,
+        horizons: Optional[List[Tuple[str, int]]] = None,
+    ) -> None:
+        """Orchestrate target label generation for specified horizons.
 
-        Steps per horizon (("1h", 4), ("4h", 16), ("8h", 32)):
+        Default horizons are ("1h", 4), ("4h", 16), ("8h", 32). For 15m-only
+        testing, pass horizons=[("15m", 1)] to align with 15-minute features and
+        emit ml_training_dataset_15m.parquet.
+
+        Steps per horizon:
         1. For each token in MASTER_TOKEN_LIST, fetch OHLCV 15m from registry
            and compute barriers and labels.
         2. Concatenate labels across tokens, adding the token column.
@@ -275,7 +329,8 @@ class TargetGenerator:
         5. Save final labeled DataFrame to Parquet:
            output/training_data/ml_training_dataset_{h}.parquet
         """
-        horizons: List[Tuple[str, int]] = [("1h", 4), ("4h", 16), ("8h", 32)]
+        default_horizons: List[Tuple[str, int]] = [("1h", 4), ("4h", 16), ("8h", 32)]
+        horizons = list(horizons) if horizons is not None else default_horizons
 
         output_dir = Path("output") / "training_data"
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -284,25 +339,48 @@ class TargetGenerator:
         tokens = list(MASTER_TOKEN_LIST.keys())
 
         for horizon, fwd in horizons:
+            logger.info(
+                "TargetGenerator: Processing horizon=%s (look_forward=%s)", horizon, fwd
+            )
             per_token_labels: List[pd.DataFrame] = []
 
             for token in tokens:
+                logger.debug(
+                    "TargetGenerator: [%s] Attempting to fetch OHLCV from registry...",
+                    token,
+                )
                 # Try common registry keys for OHLCV 15m per token
+                tkn = token.lower()
                 oh_keys = [
-                    f"{token}_ohlcv_15m_df",
-                    f"{token}_ohlcv_df",
-                    f"ohlcv_15m_df_{token}",
+                    f"{tkn}_ohlcv_15m_df",
                 ]
                 ohlcv: Optional[pd.DataFrame] = None
                 for name in oh_keys:
+                    logger.debug("Fetching feature data: %s", name)
                     try:
                         ohlcv = await self._registry.get_df(name)
-                        break
+                        if ohlcv is not None and not ohlcv.empty:
+                            logger.debug(
+                                "Successfully fetched OHLCV for %s via key '%s'. Shape: %s",
+                                token,
+                                name,
+                                ohlcv.shape,
+                            )
+                            break
+                        else:
+                            logger.debug(
+                                "Key '%s' returned empty DataFrame for %s", name, token
+                            )
                     except KeyError:
-                        continue
+                        logger.debug("Registry key not found: %s", name)
+                    except Exception as e:
+                        logger.error("Error fetching '%s' for %s: %s", name, token, e)
 
                 if ohlcv is None or ohlcv.empty:
-                    # Skip token if no OHLCV available
+                    logger.warning(
+                        "TargetGenerator: [%s] No OHLCV data found; skipping token.",
+                        token,
+                    )
                     continue
 
                 # Compute barriers and labels for this token
@@ -312,80 +390,95 @@ class TargetGenerator:
                 # Add token and normalized numeric timestamp to align with feature store
                 labels["token"] = token
                 # Numeric epoch for join alignment with feature store
-                labels["timestamp_int"] = _epoch_seconds(labels["timestamp"])
+                labels["timestamp_int"] = _epoch_seconds(labels["timestamp"]).astype(
+                    "int64"
+                )
 
+                logger.debug(
+                    "TargetGenerator: [%s] Labels computed. Shape: %s; head: %s",
+                    token,
+                    labels.shape,
+                    labels.head(3).to_dict(orient="records"),
+                )
                 per_token_labels.append(labels)
 
             if not per_token_labels:
-                # Nothing to do for this horizon
+                logger.warning(
+                    "TargetGenerator: No labels generated for horizon=%s; skipping save.",
+                    horizon,
+                )
                 continue
 
             labels_all = pd.concat(per_token_labels, axis=0, ignore_index=True)
-
-            # Fetch feature store for this horizon
-            fs: Optional[pd.DataFrame] = None
-            try:
-                fs = await self._registry.get_df(f"feature_store_{horizon}")
-            except KeyError:
-                fs = None
-
-            if fs is None:
-                # Fallback to CSV export if present
-                csv_path = output_dir / f"feature_store_{horizon}.csv"
-                if csv_path.exists():
-                    try:
-                        fs = pd.read_csv(csv_path.as_posix())
-                    except Exception:
-                        fs = None
-
-            if fs is None or fs.empty:
-                # If no feature store, still save labels per token for inspection
-                out = labels_all.copy()
-                out_path = output_dir / f"ml_training_dataset_{horizon}.parquet"
-                # Save with pyarrow engine
-                out.to_parquet(out_path.as_posix(), index=False)
-                continue
-
-            # Normalize feature store timestamp and join
-            fs = fs.copy()
-            if "timestamp" not in fs.columns or "token" not in fs.columns:
-                # Cannot join safely; just save labels
-                out = labels_all.copy()
-                out_path = output_dir / f"ml_training_dataset_{horizon}.parquet"
-                out.to_parquet(out_path.as_posix(), index=False)
-                continue
-
-            # Detect timestamp type in feature store (int epoch vs datetime)
-            ts_is_int = pd.api.types.is_integer_dtype(
-                fs["timestamp"]
-            ) or pd.api.types.is_numeric_dtype(fs["timestamp"])
-            if ts_is_int:
-                fs["timestamp_int"] = fs["timestamp"].astype("int64")
-            else:
-                fs["timestamp"] = pd.to_datetime(
-                    fs["timestamp"], utc=True, errors="coerce"
-                )
-                fs["timestamp_int"] = _epoch_seconds(fs["timestamp"]).astype("int64")
-
-            # Left join: keep all feature rows and add the label when available
-            merged = fs.merge(
-                labels_all[["timestamp_int", "token", "target_prediction"]],
-                on=["timestamp_int", "token"],
-                how="left",
+            # Rename to horizon-specific target column expected by DataPreparer
+            target_col = f"target_{horizon}"
+            labels_all = labels_all.rename(columns={"target_prediction": target_col})
+            logger.debug(
+                "TargetGenerator: Combined labels shape for %s: %s; target_col=%s",
+                horizon,
+                labels_all.shape,
+                target_col,
             )
 
-            # If there is already a target column, prefer the freshly computed one
-            if "target_prediction" in fs.columns:
-                tp_y = merged["target_prediction_y"]
-                tp_x = merged.get("target_prediction_x")
-                merged["target_prediction"] = tp_y.combine_first(tp_x)
-                drop_cols = [
-                    c for c in merged.columns if c.endswith("_x") or c.endswith("_y")
-                ]
-                merged = merged.drop(columns=drop_cols)
+            # Use the provided feature DataFrame directly (no registry/CSV lookup)
+            fs: Optional[pd.DataFrame] = feature_df
+            logger.debug(
+                "Using feature_df provided to TargetGenerator for horizon %s. Shape: %s",
+                horizon,
+                None if fs is None else fs.shape,
+            )
 
-            # Save to Parquet
+            # If features are missing or empty, nothing to merge; skip saving for this horizon
+            if fs is None or fs.empty:
+                logger.warning(
+                    "TargetGenerator: feature_df is None or empty for %s; skipping save.",
+                    horizon,
+                )
+                continue
+
+            # Prepare copies and required columns for inner merge on ['timestamp','token']
+            fs = fs.copy()
+            # Ensure required columns exist in features
+            if "token" not in fs.columns:
+                # If the features are per single token without explicit column, infer from MASTER_TOKEN_LIST size==1
+                inferred_token = None
+                if len(tokens) == 1:
+                    inferred_token = tokens[0]
+                if inferred_token is not None:
+                    fs["token"] = inferred_token
+                else:
+                    raise KeyError("feature_df must include a 'token' column for merge")
+
+            if "timestamp" not in fs.columns:
+                # Best-effort: move index to column if it looks like time
+                if isinstance(fs.index, pd.DatetimeIndex):
+                    fs["timestamp"] = fs.index
+                else:
+                    raise KeyError(
+                        "feature_df must include a 'timestamp' column for merge"
+                    )
+
+            # Normalize timestamps to UTC datetime in both frames, then merge on ['timestamp','token']
+            fs["timestamp"] = pd.to_datetime(fs["timestamp"], utc=True, errors="coerce")
+            labels_all["timestamp"] = pd.to_datetime(
+                labels_all["timestamp"], utc=True, errors="coerce"
+            )
+
+            # Perform inner merge to ensure only aligned rows are saved
+            merged = fs.merge(
+                labels_all[["timestamp", "token", target_col]],
+                on=["timestamp", "token"],
+                how="inner",
+            )
+
+            # Final confirmation log
             out_path = output_dir / f"ml_training_dataset_{horizon}.parquet"
+            logger.info(
+                "Saving final merged dataset for %s: path=%s; shape=%s",
+                horizon,
+                out_path,
+                merged.shape,
+            )
             merged.to_parquet(out_path.as_posix(), index=False)
 
         return None

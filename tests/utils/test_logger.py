@@ -4,7 +4,7 @@ from io import StringIO
 import sys
 
 
-from unicorn_wealth.utils.logger import setup_logger
+from utils.logger import setup_logger
 
 
 class DummyHandler(logging.Handler):

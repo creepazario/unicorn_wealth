@@ -6,12 +6,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-try:  # Prefer relative import
-    from ...ml_lifecycle.validator import BacktestMetrics, ModelValidator
-    from ...config import BACKTESTING_SETTINGS
-except Exception:  # pragma: no cover - fallback when running tests differently
-    from unicorn_wealth.ml_lifecycle.validator import BacktestMetrics, ModelValidator  # type: ignore
-    from unicorn_wealth.config import BACKTESTING_SETTINGS  # type: ignore
+from ml_lifecycle.validator import BacktestMetrics, ModelValidator
+from config import BACKTESTING_SETTINGS
 
 
 class _AlwaysLongModel:

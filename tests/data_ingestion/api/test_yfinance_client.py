@@ -3,7 +3,7 @@ import asyncio
 import pandas as pd
 import pytest
 
-from unicorn_wealth.data_ingestion.api.yfinance_client import YFinanceClient
+from data_ingestion.api.yfinance_client import YFinanceClient
 
 
 @pytest.fixture(autouse=True)

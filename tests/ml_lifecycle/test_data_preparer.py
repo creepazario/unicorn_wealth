@@ -55,7 +55,7 @@ def synthetic_parquet_setup(tmp_path: Path) -> Dict[str, Path | pd.DataFrame]:
 
 
 def test_data_preparation_logic(
-    synthetic_parquet_setup: Dict[str, Path | pd.DataFrame]
+    synthetic_parquet_setup: Dict[str, Path | pd.DataFrame],
 ) -> None:
     output_dir = synthetic_parquet_setup["output_dir"]  # type: ignore[assignment]
     spec_path = synthetic_parquet_setup["spec_path"]  # type: ignore[assignment]

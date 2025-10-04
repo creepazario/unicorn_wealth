@@ -16,20 +16,12 @@ from typing import Dict, Iterable, List, Optional
 import numpy as np
 import pandas as pd
 
-try:  # Prefer relative import when available
-    from ..config import (
-        TIME_DECAY_HALF_LIFE_MONTHS,
-        TIME_DECAY_WEIGHT_FLOOR,
-        TRAIN_TEST_SPLIT_PCT,
-        VALIDATION_SPLIT_PCT,
-    )
-except Exception:  # pragma: no cover - fallback for direct execution context
-    from unicorn_wealth.config import (  # type: ignore
-        TIME_DECAY_HALF_LIFE_MONTHS,
-        TIME_DECAY_WEIGHT_FLOOR,
-        TRAIN_TEST_SPLIT_PCT,
-        VALIDATION_SPLIT_PCT,
-    )
+from config import (
+    TIME_DECAY_HALF_LIFE_MONTHS,
+    TIME_DECAY_WEIGHT_FLOOR,
+    TRAIN_TEST_SPLIT_PCT,
+    VALIDATION_SPLIT_PCT,
+)
 
 
 __all__ = ["PreparedData", "DataPreparer"]

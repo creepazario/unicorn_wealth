@@ -7,39 +7,66 @@ market and social datasets. Each table is configured as a hypertable on the
 
 from __future__ import annotations
 
-from sqlalchemy.types import BigInteger, Float, Integer, String
-from sqlalchemy.orm import Mapped, mapped_column
-
 from .base import Base
-
+from sqlalchemy import Column, Integer, String, Float, BigInteger, UniqueConstraint
 
 TIMESCALEDB_ARGS = ({"timescaledb_hypertable": {"time_column_name": "timestamp"}},)
 
 
-class RawOHLCV(Base):
-    """Raw OHLCV candles as received from providers.
+class RawOHLCV15m(Base):
+    __tablename__ = "raw_ohlcv_15m"
+    timestamp = Column(BigInteger, primary_key=True)
+    token = Column(String, primary_key=True)
+    open = Column(Float(53), nullable=False)
+    high = Column(Float(53), nullable=False)
+    low = Column(Float(53), nullable=False)
+    close = Column(Float(53), nullable=False)
+    volume = Column(Float(53), nullable=False)
+    __table_args__ = (
+        UniqueConstraint("timestamp", "token", name="_timestamp_token_uc_15m"),
+    )
 
-    Columns:
-        - id: surrogate primary key
-        - timestamp: UNIX epoch milliseconds/seconds (BigInteger), indexed
-        - token: asset identifier/symbol, indexed
-        - interval: candle interval (e.g., 1m, 5m, 1h)
-        - open, high, low, close, volume: float values from source
-    """
 
-    __tablename__ = "raw_ohlcv"
-    __table_args__ = TIMESCALEDB_ARGS
+class RawOHLCV1h(Base):
+    __tablename__ = "raw_ohlcv_1h"
+    timestamp = Column(BigInteger, primary_key=True)
+    token = Column(String, primary_key=True)
+    open = Column(Float(53), nullable=False)
+    high = Column(Float(53), nullable=False)
+    low = Column(Float(53), nullable=False)
+    close = Column(Float(53), nullable=False)
+    volume = Column(Float(53), nullable=False)
+    __table_args__ = (
+        UniqueConstraint("timestamp", "token", name="_timestamp_token_uc_1h"),
+    )
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    timestamp: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
-    token: Mapped[str] = mapped_column(String, index=True, nullable=False)
-    interval: Mapped[str] = mapped_column(String, nullable=False)
 
-    open: Mapped[float] = mapped_column(Float, nullable=False)
-    high: Mapped[float] = mapped_column(Float, nullable=False)
-    low: Mapped[float] = mapped_column(Float, nullable=False)
-    close: Mapped[float] = mapped_column(Float, nullable=False)
-    volume: Mapped[float] = mapped_column(Float, nullable=False)
+class RawOHLCV4h(Base):
+    __tablename__ = "raw_ohlcv_4h"
+    timestamp = Column(BigInteger, primary_key=True)
+    token = Column(String, primary_key=True)
+    open = Column(Float(53), nullable=False)
+    high = Column(Float(53), nullable=False)
+    low = Column(Float(53), nullable=False)
+    close = Column(Float(53), nullable=False)
+    volume = Column(Float(53), nullable=False)
+    __table_args__ = (
+        UniqueConstraint("timestamp", "token", name="_timestamp_token_uc_4h"),
+    )
+
+
+class RawOHLCV1d(Base):
+    __tablename__ = "raw_ohlcv_1d"
+    timestamp = Column(BigInteger, primary_key=True)
+    token = Column(String, primary_key=True)
+    open = Column(Float(53), nullable=False)
+    high = Column(Float(53), nullable=False)
+    low = Column(Float(53), nullable=False)
+    close = Column(Float(53), nullable=False)
+    volume = Column(Float(53), nullable=False)
+    __table_args__ = (
+        UniqueConstraint("timestamp", "token", name="_timestamp_token_uc_1d"),
+    )
 
 
 class RawFundingRates(Base):
@@ -48,11 +75,11 @@ class RawFundingRates(Base):
     __tablename__ = "raw_funding_rates"
     __table_args__ = TIMESCALEDB_ARGS
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    timestamp: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
-    token: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    timestamp = Column(BigInteger, index=True, nullable=False)
+    token = Column(String, index=True, nullable=False)
 
-    rate: Mapped[float] = mapped_column(Float, nullable=False)
+    rate = Column(Float, nullable=False)
 
 
 class RawSocialMetrics(Base):
@@ -61,16 +88,34 @@ class RawSocialMetrics(Base):
     __tablename__ = "raw_social_metrics"
     __table_args__ = TIMESCALEDB_ARGS
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    timestamp: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
-    token: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    timestamp = Column(BigInteger, index=True, nullable=False)
+    token = Column(String, index=True, nullable=False)
 
-    social_dominance: Mapped[float] = mapped_column(Float, nullable=False)
-    sentiment: Mapped[float] = mapped_column(Float, nullable=False)
+    social_dominance = Column(Float, nullable=False)
+    sentiment = Column(Float, nullable=False)
+
+
+class RawOHLCV7d(Base):
+    __tablename__ = "raw_ohlcv_7d"
+    timestamp = Column(BigInteger, primary_key=True)
+    token = Column(String, primary_key=True)
+    open = Column(Float(53), nullable=False)
+    high = Column(Float(53), nullable=False)
+    low = Column(Float(53), nullable=False)
+    close = Column(Float(53), nullable=False)
+    volume = Column(Float(53), nullable=False)
+    __table_args__ = (
+        UniqueConstraint("timestamp", "token", name="_timestamp_token_uc_7d"),
+    )
 
 
 __all__ = [
-    "RawOHLCV",
+    "RawOHLCV15m",
+    "RawOHLCV1h",
+    "RawOHLCV4h",
+    "RawOHLCV1d",
+    "RawOHLCV7d",
     "RawFundingRates",
     "RawSocialMetrics",
 ]

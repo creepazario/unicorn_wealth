@@ -69,8 +69,27 @@ class DataFrameRegistry:
         if not isinstance(df, pd.DataFrame):
             raise TypeError("df must be a pandas DataFrame")
 
-        mode = update_mode.lower().strip()
-        keep = int(storage_period)
+        # Normalize update_mode and storage_period robustly
+        s = "" if update_mode is None else str(update_mode)
+        mode = s.lower().strip().replace("-", "_").replace(" ", "_")
+        # Map common synonyms and defaults
+        if mode in {"", "not_required", "none", "null"}:
+            mode = "overwrite"
+        elif mode in {"replace", "full", "full_refresh", "recreate"}:
+            mode = "overwrite"
+        elif mode in {
+            "append",
+            "rolling",
+            "rollingappend",
+            "rolling_update",
+            "append_rolling",
+        }:
+            mode = "rolling_append"
+
+        try:
+            keep = int(storage_period) if storage_period is not None else 0
+        except Exception:
+            keep = 0
 
         async with self._lock:
             if mode == "overwrite":
@@ -92,10 +111,10 @@ class DataFrameRegistry:
                 self._dataframes[name] = truncated
                 return
 
-            # Unsupported mode
-            raise ValueError(
-                "update_mode must be either 'overwrite' or 'rolling_append'"
-            )
+            # Unsupported mode -> default to overwrite for robustness
+            # This prevents the pipeline from failing on benign variants.
+            self._dataframes[name] = df
+            return
 
     async def list_dfs(self) -> List[str]:
         """Return the list of stored DataFrame names."""

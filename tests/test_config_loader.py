@@ -21,12 +21,13 @@ def test_load_settings_basic_fields():
     assert isinstance(s.database_url, str)
     assert s.database_url.startswith("postgresql+asyncpg://")
 
-    # Telegram settings should be present as non-empty strings
+    # Telegram settings types
     assert isinstance(s.telegram_api_id, str) and s.telegram_api_id
     assert isinstance(s.telegram_api_hash, str) and s.telegram_api_hash
     assert isinstance(s.telegram_bot_token, str) and s.telegram_bot_token
-    assert isinstance(s.telegram_admin_channel_id, str) and s.telegram_admin_channel_id
-    assert isinstance(s.telegram_trade_channel_id, str) and s.telegram_trade_channel_id
+    # Channel IDs must be integers (Telethon bots require numeric IDs)
+    assert isinstance(s.telegram_admin_channel_id, int)
+    assert isinstance(s.telegram_trade_channel_id, int)
 
 
 def test_nested_exchange_credentials():

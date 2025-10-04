@@ -6,10 +6,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-try:  # Prefer relative import when available
-    from ..config import BACKTESTING_SETTINGS
-except Exception:  # pragma: no cover - fallback for direct execution context
-    from unicorn_wealth.config import BACKTESTING_SETTINGS  # type: ignore
+from config import BACKTESTING_SETTINGS
 
 
 @dataclass
@@ -277,15 +274,17 @@ class ModelValidator:
         - Otherwise, FLAT.
         """
 
-        preds = [
-            row.get("pred_1h", np.nan),
-            row.get("pred_4h", np.nan),
-            row.get("pred_8h", np.nan),
-        ]
-        preds = np.array([p for p in preds if pd.notna(p)], dtype=float)
-        if len(preds) == 0:
+        # Collect any prediction columns starting with 'pred_'
+        pred_vals: List[float] = []
+        for col, val in row.items():
+            if isinstance(col, str) and col.startswith("pred_") and pd.notna(val):
+                try:
+                    pred_vals.append(float(val))
+                except Exception:
+                    continue
+        if not pred_vals:
             return ("FLAT", 0.0, 0.0)
-        if float(np.nanmean(preds)) > 0.0:
+        if float(np.nanmean(pred_vals)) > 0.0:
             return ("OPEN_LONG", 0.005, 0.01)
         return ("FLAT", 0.0, 0.0)
 
@@ -293,26 +292,61 @@ class ModelValidator:
     def _load_challenger_models(self, run_id: str) -> Dict[str, object]:
         """Load challenger models from an MLflow run's artifacts.
 
-        Expects pyfunc models logged under model_artifact_map paths.
+        This attempts to load models logged under child runs of the given parent
+        training run (named "{horizon}_model"), default artifact_path="model".
+        Falls back to attempting to load artifacts directly under the parent run
+        using the provided relative paths.
         """
         models: Dict[str, object] = {}
         try:
             import mlflow
+            from mlflow.tracking import MlflowClient
 
-            for horizon, rel_path in self.model_artifact_map.items():
-                uri = f"runs:/{run_id}/{rel_path}"
+            client = MlflowClient()
+            parent = client.get_run(run_id)
+            exp_id = parent.info.experiment_id
+            # Find child runs
+            runs = client.search_runs(
+                [exp_id], filter_string=f"tags.mlflow.parentRunId = '{run_id}'"
+            )
+            horizon_to_child: Dict[str, str] = {}
+            for r in runs:
+                name = r.data.tags.get("mlflow.runName") or ""
+                if name.endswith("_model"):
+                    h = name[:-6]
+                    horizon_to_child[h] = r.info.run_id
+
+            for horizon in self.model_artifact_map.keys():
+                child_id = horizon_to_child.get(horizon)
+                if child_id:
+                    uri = f"runs:/{child_id}/model"
+                else:
+                    # Fallback to parent-relative path
+                    rel_path = self.model_artifact_map[horizon]
+                    uri = f"runs:/{run_id}/{rel_path}"
                 try:
                     models[horizon] = mlflow.pyfunc.load_model(uri)
                 except Exception:
-                    # Skip missing models; backtest will handle absent horizons
                     continue
         except Exception:
-            # MLflow not available; cannot load models
-            pass
+            # MLflow not available or search failed; best-effort fallback to parent paths
+            try:
+                import mlflow  # type: ignore
+
+                for horizon, rel_path in self.model_artifact_map.items():
+                    uri = f"runs:/{run_id}/{rel_path}"
+                    try:
+                        models[horizon] = mlflow.pyfunc.load_model(uri)
+                    except Exception:
+                        continue
+            except Exception:
+                pass
         return models
 
     def _load_champion_models(self) -> Dict[str, object]:
-        """Load current champion models from MLflow Model Registry (Production)."""
+        """Load current champion models from MLflow Model Registry using alias 'production',
+        with a fallback to deprecated stage lookup if alias is unavailable.
+        """
         models: Dict[str, object] = {}
         try:
             import mlflow
@@ -320,11 +354,25 @@ class ModelValidator:
 
             client = MlflowClient()
             for horizon, name in self.registry_model_names.items():
+                mv = None
+                # Prefer alias-based resolution
                 try:
-                    versions = client.get_latest_versions(name, stages=["Production"])  # type: ignore[arg-type]
-                    if not versions:
-                        continue
-                    mv = versions[0]
+                    mv = client.get_model_version_by_alias(
+                        name=name, alias="production"
+                    )
+                except Exception:
+                    mv = None
+                # Fallback to stage-based resolution if alias not set
+                if mv is None:
+                    try:
+                        versions = client.get_latest_versions(name, stages=["Production"])  # type: ignore[arg-type]
+                        if versions:
+                            mv = versions[0]
+                    except Exception:
+                        mv = None
+                if mv is None:
+                    continue
+                try:
                     models[horizon] = mlflow.pyfunc.load_model(mv.source)
                 except Exception:
                     continue
@@ -341,19 +389,15 @@ class ModelValidator:
         Missing horizons will yield NaNs.
         """
         out = pd.DataFrame(index=features.index)
-        for horizon, col in [("1h", "pred_1h"), ("4h", "pred_4h"), ("8h", "pred_8h")]:
-            model = models.get(horizon)
-            if model is None:
-                out[col] = np.nan
-                continue
+        # Create prediction columns dynamically based on available models
+        for horizon, model in models.items():
+            col = f"pred_{horizon}"
             try:
-                # mlflow.pyfunc models typically accept pandas DataFrame
                 preds = model.predict(features)
-                # Ensure we get a 1D array/Series
                 if (
                     isinstance(preds, (pd.DataFrame, np.ndarray))
-                    and preds.ndim > 1
-                    and preds.shape[1] == 1
+                    and getattr(preds, "ndim", 1) > 1
+                    and getattr(preds, "shape", (0, 0))[1] == 1
                 ):
                     preds = np.ravel(preds)
                 out[col] = pd.Series(preds, index=features.index)

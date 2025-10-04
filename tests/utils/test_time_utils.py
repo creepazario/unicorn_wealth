@@ -1,7 +1,7 @@
 import pytest
 from datetime import datetime, timezone
 
-from unicorn_wealth.utils.time_utils import (
+from utils.time_utils import (
     parse_to_utc,
     datetime_to_unix,
 )
